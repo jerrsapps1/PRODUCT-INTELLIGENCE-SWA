@@ -43,6 +43,18 @@ import type {
   PlanReviewRunInput,
   ResubmissionComparison,
   ResubmissionComparisonCreateInput,
+  FieldObservation,
+  ObservationCreateInput,
+  ObservationDetail,
+  ObservationPhoto,
+  ObservationPhotoAttachInput,
+  ObservationPhotoUpdateInput,
+  ObservationPlanFindingLink,
+  ObservationPlanFindingLinkInput,
+  ObservationReferenceLink,
+  ObservationReferenceLinkInput,
+  ObservationSearchInput,
+  ObservationUpdateInput,
   UserSummary
 } from "../shared/contracts";
 
@@ -120,6 +132,18 @@ export interface AppStore {
   updatePlanRecommendation(userId: string, reviewId: string, input: PlanRecommendationUpdateInput): Promise<PlanReview | null>;
   updatePlanApproval(userId: string, planId: string, input: PlanApprovalInput): Promise<SafetyPlanDetail | null>;
   createResubmissionComparison(userId: string, planId: string, input: ResubmissionComparisonCreateInput): Promise<ResubmissionComparison[]>;
+  listObservations(userId: string, filters: ObservationSearchInput): Promise<FieldObservation[]>;
+  createObservation(userId: string, input: ObservationCreateInput): Promise<ObservationDetail>;
+  getObservation(userId: string, observationId: string): Promise<ObservationDetail | null>;
+  updateObservation(userId: string, observationId: string, input: ObservationUpdateInput): Promise<ObservationDetail | null>;
+  attachObservationPhoto(userId: string, observationId: string, input: ObservationPhotoAttachInput): Promise<ObservationPhoto>;
+  updateObservationPhoto(userId: string, photoId: string, input: ObservationPhotoUpdateInput): Promise<ObservationPhoto | null>;
+  removeObservationPhoto(userId: string, photoId: string): Promise<void>;
+  runObservationEnrichment(userId: string, observationId: string): Promise<ObservationDetail | null>;
+  linkObservationReference(userId: string, observationId: string, input: ObservationReferenceLinkInput): Promise<ObservationReferenceLink>;
+  unlinkObservationReference(userId: string, linkId: string): Promise<void>;
+  linkObservationPlanFinding(userId: string, observationId: string, input: ObservationPlanFindingLinkInput): Promise<ObservationPlanFindingLink>;
+  unlinkObservationPlanFinding(userId: string, linkId: string): Promise<void>;
 }
 
 export class DuplicateEngagementError extends Error {
@@ -149,5 +173,23 @@ export class DuplicateEvidenceAssociationError extends Error {
 export class DuplicatePlanRevisionSourceError extends Error {
   constructor() {
     super("This source is already attached as a revision for the safety plan");
+  }
+}
+
+export class DuplicateObservationPhotoError extends Error {
+  constructor() {
+    super("Photo source is already attached to this observation");
+  }
+}
+
+export class DuplicateObservationReferenceError extends Error {
+  constructor() {
+    super("Reference source is already linked to this observation");
+  }
+}
+
+export class DuplicateObservationPlanFindingLinkError extends Error {
+  constructor() {
+    super("Plan finding is already linked to this observation");
   }
 }

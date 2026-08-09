@@ -390,6 +390,42 @@ p {
   background: #f7faf6;
 }
 
+.check-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  font-weight: 700;
+}
+
+.check-row input {
+  width: 22px;
+  min-height: 22px;
+}
+
+.photo-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 0.75rem;
+}
+
+.photo-strip a {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.5rem;
+  border: 1px solid #d0d5cf;
+  border-radius: 8px;
+  background: #fffdfa;
+  color: #24312e;
+  text-decoration: none;
+}
+
+.photo-strip img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #e9eee9;
+}
+
 a {
   color: #315f50;
   font-weight: 800;

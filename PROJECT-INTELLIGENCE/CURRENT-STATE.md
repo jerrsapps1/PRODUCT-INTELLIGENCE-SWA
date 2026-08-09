@@ -17,6 +17,7 @@ Status date: 2026-08-09
 - The source model distinguishes source records, original storage references, extracted chunks, and project-source activation links.
 - The readiness model distinguishes project-level requirements from contractor-specific engagement statuses and evidence reviews.
 - The plan-review model preserves submitted plan sources, revisions, selected review sources, draft findings, reviewer edits, recommendations, approvals, and audit history separately.
+- The field-observation model preserves original field notes and photo source associations separately from editable AI suggestions, reviewer fields, follow-up state, and plan-finding links.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1
@@ -72,11 +73,27 @@ Status date: 2026-08-09
 - Plan-review audit events and responsive side-by-side/tablet review UI.
 - Provider-agnostic plan review assistant with optional OpenAI Responses API integration and deterministic local fallback.
 
+## Implemented in Phase 5
+
+- Touch-oriented field observation entry for project-level/general notes and contractor-linked notes.
+- Original observation text preservation with derived classification, category, summary, activity, follow-up, and reviewer notes stored separately.
+- Observation classifications for positive, neutral/informational, concern, corrected in field, and follow-up required.
+- Optional multi-photo association through the existing source/original-storage pipeline; unlinking photos preserves original source records.
+- Optional location and activity fields suitable for fast field capture.
+- Provider-agnostic observation enrichment with deterministic local suggestions and editable/rejectable AI-derived fields.
+- Grounded reference suggestions only when existing active project/global source chunks are available.
+- Optional human-confirmed links from observations to prior plan review findings.
+- Factual recurrence awareness by project/category context without scoring or performance ratings.
+- Follow-up states for none, needed, and verified/closed.
+- Observation audit events for creation, edits, photo changes, AI processing, plan-finding links, and closure.
+- Chronological project observation list with contractor/classification/category/follow-up/date filtering through the API.
+- Responsive field operations controls in the existing desktop/tablet workspace.
+
 ## Not implemented by design
 
-- Embeddings, vector search, general crawling, field observations, incidents, corrective actions, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
+- Embeddings, vector search, general crawling, incidents, corrective actions, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
 - Production object-storage provider integration. The abstraction exists; hosted object storage must be configured for production.
-- Phase 5+ provider-specific workflows. Phase 4 AI integration is limited to bounded, selected-source plan review.
+- Phase 6+ provider-specific workflows. Phase 5 AI integration is limited to bounded field-observation suggestions and does not create incident, citation, discipline, corrective-action, or performance-rating records.
 
 ## Operational requirements
 
@@ -84,8 +101,9 @@ Status date: 2026-08-09
 - Production requires a strong `BOOTSTRAP_PASSWORD`; the server rejects the default development password when `NODE_ENV=production`.
 - `BOOTSTRAP_EMAIL`, `BOOTSTRAP_DISPLAY_NAME`, `SESSION_SECRET`, `LOCAL_STORAGE_DIR`, and `PORT` are configurable.
 - Plan review AI is optional. Configure `PLAN_REVIEW_AI_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `OPENAI_PLAN_REVIEW_MODEL` to use the external AI provider; otherwise the deterministic local fallback is used.
+- Field observation AI currently uses deterministic local enrichment. Future provider configuration must preserve the same human-editable, non-incident, non-scoring boundaries.
 - Database backups and future object-storage backups are documented in `PROJECT-INTELLIGENCE/architecture/DEPLOYMENT.md`. Hosted PostgreSQL backup configuration is pending deployment provisioning, not optional.
 
 ## Current constraint
 
-Phase 4 Safety Plan Review is formally complete. Do not begin Phase 5 Field Operations or any later phase.
+Phase 5 Field Operations is implemented and verified. Do not begin Phase 6 Incident Oversight or any later phase.

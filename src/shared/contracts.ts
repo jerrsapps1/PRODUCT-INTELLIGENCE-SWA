@@ -42,6 +42,9 @@ export const safetyPlanTypes = [
 export const planFindingTypes = ["compliant", "revision_recommended", "deficiency", "conflict", "reviewer_decision"] as const;
 export const planFindingAuthorities = ["regulatory_requirement", "project_requirement", "recommendation", "reviewer_decision"] as const;
 export const resubmissionResolutionStatuses = ["addressed", "partially_addressed", "unresolved", "reviewer_decision"] as const;
+export const observationClassifications = ["positive", "neutral", "concern", "corrected_in_field", "follow_up_required"] as const;
+export const observationFollowUpStatuses = ["none", "needed", "verified_closed"] as const;
+export const observationSuggestionStatuses = ["saved", "processing", "ready", "failed"] as const;
 
 export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, "Project name is required").max(160),
@@ -252,6 +255,66 @@ export const resubmissionComparisonCreateSchema = z.object({
   })).default([])
 });
 
+export const observationSearchSchema = z.object({
+  projectId: z.string().uuid(),
+  engagementId: z.string().uuid().optional(),
+  classification: z.enum(observationClassifications).optional(),
+  category: z.string().trim().max(120).optional(),
+  followUpStatus: z.enum(observationFollowUpStatuses).optional(),
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
+export const observationCreateSchema = z.object({
+  projectId: z.string().uuid(),
+  engagementId: z.string().uuid().optional().or(z.literal("")),
+  originalText: z.string().trim().min(1, "Observation text is required").max(8000),
+  observedAt: z.string().datetime().optional().or(z.literal("")),
+  location: z.string().trim().max(240).optional().or(z.literal("")),
+  activity: z.string().trim().max(180).optional().or(z.literal("")),
+  reviewerNote: z.string().trim().max(4000).optional().or(z.literal("")),
+  followUpNeeded: z.coerce.boolean().default(false),
+  classification: z.enum(observationClassifications).optional(),
+  category: z.string().trim().max(120).optional().or(z.literal(""))
+});
+
+export const observationUpdateSchema = z.object({
+  derivedClassification: z.enum(observationClassifications).optional(),
+  category: z.string().trim().max(120).optional().or(z.literal("")),
+  activity: z.string().trim().max(180).optional().or(z.literal("")),
+  location: z.string().trim().max(240).optional().or(z.literal("")),
+  derivedSummary: z.string().trim().max(4000).optional().or(z.literal("")),
+  reviewerNote: z.string().trim().max(4000).optional().or(z.literal("")),
+  followUpStatus: z.enum(observationFollowUpStatuses).optional(),
+  followUpNote: z.string().trim().max(4000).optional().or(z.literal("")),
+  followUpDueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+  aiSuggestionsRejected: z.boolean().optional()
+});
+
+export const observationPhotoAttachSchema = z.object({
+  sourceId: z.string().uuid(),
+  caption: z.string().trim().max(500).optional().or(z.literal(""))
+});
+
+export const observationPhotoUpdateSchema = z.object({
+  caption: z.string().trim().max(500).optional().or(z.literal(""))
+});
+
+export const observationPlanFindingLinkSchema = z.object({
+  findingId: z.string().uuid(),
+  suggested: z.boolean().default(false),
+  accepted: z.boolean().default(true),
+  note: z.string().trim().max(1000).optional().or(z.literal(""))
+});
+
+export const observationReferenceLinkSchema = z.object({
+  sourceId: z.string().uuid(),
+  sourceChunkId: z.string().uuid().optional().or(z.literal("")),
+  citationLabel: z.string().trim().max(220).optional().or(z.literal("")),
+  suggested: z.boolean().default(false),
+  accepted: z.boolean().default(true)
+});
+
 export type FederalClassification = (typeof federalClassifications)[number];
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ContractorCreateInput = z.infer<typeof contractorCreateSchema>;
@@ -276,6 +339,9 @@ export type SafetyPlanType = (typeof safetyPlanTypes)[number];
 export type PlanFindingType = (typeof planFindingTypes)[number];
 export type PlanFindingAuthority = (typeof planFindingAuthorities)[number];
 export type ResubmissionResolutionStatus = (typeof resubmissionResolutionStatuses)[number];
+export type ObservationClassification = (typeof observationClassifications)[number];
+export type ObservationFollowUpStatus = (typeof observationFollowUpStatuses)[number];
+export type ObservationSuggestionStatus = (typeof observationSuggestionStatuses)[number];
 export type ReadinessRequirementCreateInput = z.infer<typeof readinessRequirementCreateSchema>;
 export type ReadinessRequirementUpdateInput = z.infer<typeof readinessRequirementUpdateSchema>;
 export type ContractorRequirementApplyInput = z.infer<typeof contractorRequirementApplySchema>;
@@ -293,6 +359,13 @@ export type PlanFindingUpdateInput = z.infer<typeof planFindingUpdateSchema>;
 export type PlanRecommendationUpdateInput = z.infer<typeof planRecommendationUpdateSchema>;
 export type PlanApprovalInput = z.infer<typeof planApprovalSchema>;
 export type ResubmissionComparisonCreateInput = z.infer<typeof resubmissionComparisonCreateSchema>;
+export type ObservationSearchInput = z.infer<typeof observationSearchSchema>;
+export type ObservationCreateInput = z.infer<typeof observationCreateSchema>;
+export type ObservationUpdateInput = z.infer<typeof observationUpdateSchema>;
+export type ObservationPhotoAttachInput = z.infer<typeof observationPhotoAttachSchema>;
+export type ObservationPhotoUpdateInput = z.infer<typeof observationPhotoUpdateSchema>;
+export type ObservationPlanFindingLinkInput = z.infer<typeof observationPlanFindingLinkSchema>;
+export type ObservationReferenceLinkInput = z.infer<typeof observationReferenceLinkSchema>;
 
 export interface UserSummary {
   id: string;
@@ -608,6 +681,89 @@ export interface SafetyPlanDetail {
   findings: PlanFinding[];
   comparisons: ResubmissionComparison[];
   auditEvents: PlanReviewAuditEvent[];
+}
+
+export interface FieldObservation {
+  id: string;
+  projectId: string;
+  engagementId: string | null;
+  contractorId: string | null;
+  creatorUserId: string;
+  originalText: string;
+  observedAt: string;
+  location: string | null;
+  activity: string | null;
+  derivedClassification: ObservationClassification | null;
+  category: string | null;
+  derivedSummary: string | null;
+  reviewerNote: string | null;
+  followUpStatus: ObservationFollowUpStatus;
+  followUpNote: string | null;
+  followUpDueDate: string | null;
+  followUpVerifiedAt: string | null;
+  followUpVerifiedByUserId: string | null;
+  aiSuggestionStatus: ObservationSuggestionStatus;
+  suggestedClassification: ObservationClassification | null;
+  suggestedCategory: string | null;
+  suggestedActivity: string | null;
+  suggestedSummary: string | null;
+  suggestedFollowUpStatus: ObservationFollowUpStatus | null;
+  aiErrorState: string | null;
+  aiSuggestionsRejected: boolean;
+  recurrenceCount: number;
+  recurrenceSummary: string | null;
+  createdAt: string;
+  updatedAt: string;
+  engagement?: ProjectContractorEngagement;
+}
+
+export interface ObservationPhoto {
+  id: string;
+  observationId: string;
+  sourceId: string;
+  caption: string | null;
+  createdAt: string;
+  updatedAt: string;
+  source?: SourceRecord;
+}
+
+export interface ObservationReferenceLink {
+  id: string;
+  observationId: string;
+  sourceId: string;
+  sourceChunkId: string | null;
+  citationLabel: string | null;
+  suggested: boolean;
+  accepted: boolean;
+  createdAt: string;
+  source?: SourceRecord;
+}
+
+export interface ObservationPlanFindingLink {
+  id: string;
+  observationId: string;
+  findingId: string;
+  suggested: boolean;
+  accepted: boolean;
+  note: string | null;
+  createdAt: string;
+  finding?: PlanFinding;
+}
+
+export interface ObservationAuditEvent {
+  id: string;
+  observationId: string;
+  eventType: string;
+  message: string;
+  actorUserId: string;
+  createdAt: string;
+}
+
+export interface ObservationDetail extends FieldObservation {
+  photos: ObservationPhoto[];
+  referenceLinks: ObservationReferenceLink[];
+  planFindingLinks: ObservationPlanFindingLink[];
+  auditEvents: ObservationAuditEvent[];
 }
 
 export interface ApiErrorBody {

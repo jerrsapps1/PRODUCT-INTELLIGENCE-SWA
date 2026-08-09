@@ -17,6 +17,13 @@ import {
   planFindingUpdateSchema,
   planRecommendationUpdateSchema,
   planReviewRunSchema,
+  observationCreateSchema,
+  observationPhotoAttachSchema,
+  observationPhotoUpdateSchema,
+  observationPlanFindingLinkSchema,
+  observationReferenceLinkSchema,
+  observationSearchSchema,
+  observationUpdateSchema,
   readinessEvidenceCreateSchema,
   readinessEvidenceReviewSchema,
   readinessRequirementCreateSchema,
@@ -38,6 +45,9 @@ import { MemoryObjectStorage, type ObjectStorage } from "./storage";
 import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
+  DuplicateObservationPhotoError,
+  DuplicateObservationPlanFindingLinkError,
+  DuplicateObservationReferenceError,
   DuplicatePlanRevisionSourceError,
   DuplicateProjectSourceError,
   DuplicateRequirementApplicationError,
@@ -414,6 +424,92 @@ export async function createApp(options: AppOptions) {
         return;
       }
 
+      if (method === "GET" && parts.join("/") === "api/observations") {
+        const filters = observationSearchSchema.parse(Object.fromEntries(url.searchParams.entries()));
+        sendJson(res, 200, { observations: await store.listObservations(userId, filters) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/observations") {
+        const input = await readJson(req, observationCreateSchema);
+        const observation = await store.createObservation(userId, { ...input, followUpNeeded: input.followUpNeeded ?? false });
+        sendJson(res, 201, { observation });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "observations" && parts.length >= 3) {
+        const observationId = parts[2];
+        if (method === "GET" && parts.length === 3) {
+          const observation = await store.getObservation(userId, observationId);
+          if (!observation) sendJson(res, 404, { error: "Observation not found" });
+          else sendJson(res, 200, { observation });
+          return;
+        }
+        if (method === "PATCH" && parts.length === 3) {
+          const observation = await store.updateObservation(userId, observationId, await readJson(req, observationUpdateSchema));
+          if (!observation) sendJson(res, 404, { error: "Observation not found" });
+          else sendJson(res, 200, { observation });
+          return;
+        }
+        if (method === "POST" && parts[3] === "photos" && parts.length === 4) {
+          const photo = await store.attachObservationPhoto(userId, observationId, await readJson(req, observationPhotoAttachSchema));
+          sendJson(res, 201, { photo });
+          return;
+        }
+        if (method === "POST" && parts[3] === "enrichment-runs" && parts.length === 4) {
+          const observation = await store.runObservationEnrichment(userId, observationId);
+          if (!observation) sendJson(res, 404, { error: "Observation not found" });
+          else sendJson(res, 201, { observation });
+          return;
+        }
+        if (method === "POST" && parts[3] === "references" && parts.length === 4) {
+          const input = await readJson(req, observationReferenceLinkSchema);
+          const link = await store.linkObservationReference(userId, observationId, {
+            ...input,
+            suggested: input.suggested ?? false,
+            accepted: input.accepted ?? true
+          });
+          sendJson(res, 201, { referenceLink: link });
+          return;
+        }
+        if (method === "POST" && parts[3] === "plan-findings" && parts.length === 4) {
+          const input = await readJson(req, observationPlanFindingLinkSchema);
+          const link = await store.linkObservationPlanFinding(userId, observationId, {
+            ...input,
+            suggested: input.suggested ?? false,
+            accepted: input.accepted ?? true
+          });
+          sendJson(res, 201, { planFindingLink: link });
+          return;
+        }
+      }
+
+      if (parts[0] === "api" && parts[1] === "observation-photos" && parts.length === 3) {
+        if (method === "PATCH") {
+          const photo = await store.updateObservationPhoto(userId, parts[2], await readJson(req, observationPhotoUpdateSchema));
+          if (!photo) sendJson(res, 404, { error: "Observation photo not found" });
+          else sendJson(res, 200, { photo });
+          return;
+        }
+        if (method === "DELETE") {
+          await store.removeObservationPhoto(userId, parts[2]);
+          sendNoContent(res);
+          return;
+        }
+      }
+
+      if (method === "DELETE" && parts[0] === "api" && parts[1] === "observation-references" && parts.length === 3) {
+        await store.unlinkObservationReference(userId, parts[2]);
+        sendNoContent(res);
+        return;
+      }
+
+      if (method === "DELETE" && parts[0] === "api" && parts[1] === "observation-plan-finding-links" && parts.length === 3) {
+        await store.unlinkObservationPlanFinding(userId, parts[2]);
+        sendNoContent(res);
+        return;
+      }
+
       if (method === "GET" && parts.join("/") === "api/sources") {
         const filters = sourceSearchSchema.parse(Object.fromEntries(url.searchParams.entries()));
         sendJson(res, 200, { sources: await store.listSources(userId, filters) });
@@ -610,6 +706,14 @@ export async function createApp(options: AppOptions) {
         sendJson(res, 409, { error: error.message });
         return;
       }
+      if (
+        error instanceof DuplicateObservationPhotoError ||
+        error instanceof DuplicateObservationReferenceError ||
+        error instanceof DuplicateObservationPlanFindingLinkError
+      ) {
+        sendJson(res, 409, { error: error.message });
+        return;
+      }
       if (error instanceof Error && (
         error.message === "Project not found" ||
         error.message === "Contractor not found" ||
@@ -626,6 +730,9 @@ export async function createApp(options: AppOptions) {
       }
       if (error instanceof Error && (
         error.message === "Review source is not available to this project" ||
+        error.message === "Observation engagement must belong to the selected project" ||
+        error.message === "Observation photos must use image sources" ||
+        error.message === "Photo source must belong to the observation project" ||
         error.message === "Plan extraction failed" ||
         error.message === "At least one review source is required"
       )) {

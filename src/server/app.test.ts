@@ -618,6 +618,180 @@ describe("Phase 1 API", () => {
     expect(failedReview.status).toBe(400);
   });
 
+  it("captures field observations with preserved originals, photos, suggestions, follow-up, filters, and plan-finding links", async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/observations?projectId=00000000-0000-4000-8000-000000000000`);
+    expect(unauthenticated.status).toBe(401);
+
+    const cookie = await login();
+    const project = await createProject(cookie, "Field Operations Project");
+    const contractor = await createContractor(cookie, "Field Steel");
+    const engagement = await createEngagement(cookie, project.id, contractor.id, "Steel erection");
+    const secondProject = await createProject(cookie, "Other Field Project");
+    const wrongEngagement = await createEngagement(cookie, secondProject.id, contractor.id, "Other work");
+
+    const invalidEngagement = await fetch(`${baseUrl}/api/observations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        projectId: project.id,
+        engagementId: wrongEngagement.id,
+        originalText: "This should not cross project boundaries."
+      })
+    });
+    expect(invalidEngagement.status).toBe(400);
+
+    const created = await fetch(`${baseUrl}/api/observations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        projectId: project.id,
+        engagementId: engagement.id,
+        originalText: "Worker stepped on lower lift rail, corrected immediately in the field after discussion.",
+        location: "Area B",
+        activity: "Aerial lift work",
+        followUpNeeded: true
+      })
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await json<{ observation: { id: string; originalText: string; followUpStatus: string; engagementId: string } }>(created);
+    expect(createdBody.observation.originalText).toContain("corrected immediately");
+    expect(createdBody.observation.followUpStatus).toBe("needed");
+    expect(createdBody.observation.engagementId).toBe(engagement.id);
+
+    const projectLevel = await fetch(`${baseUrl}/api/observations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        projectId: project.id,
+        originalText: "Housekeeping was good near the loading dock.",
+        classification: "positive",
+        category: "Housekeeping"
+      })
+    });
+    expect(projectLevel.status).toBe(201);
+
+    const imageUpload = await uploadMultipart(cookie, {
+      title: "Observation photo",
+      scope: "project",
+      projectId: project.id,
+      authorityClassification: "working_document",
+      userConfirmedClassification: "true"
+    }, { filename: "observation.png", mimeType: "image/png", content: "not-real-png-but-preserved" });
+    expect(imageUpload.status).toBe(201);
+    const imageBody = await json<{ sources: Array<{ id: string; sourceType: string }> }>(imageUpload);
+    expect(imageBody.sources[0].sourceType).toBe("image");
+
+    const attached = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}/photos`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ sourceId: imageBody.sources[0].id, caption: "Lift rail correction" })
+    });
+    expect(attached.status).toBe(201);
+    const attachedBody = await json<{ photo: { id: string; sourceId: string } }>(attached);
+
+    const duplicatePhoto = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}/photos`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ sourceId: imageBody.sources[0].id })
+    });
+    expect(duplicatePhoto.status).toBe(409);
+
+    const enrichment = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}/enrichment-runs`, {
+      method: "POST",
+      headers: { cookie }
+    });
+    expect(enrichment.status).toBe(201);
+    const enriched = await json<{ observation: { originalText: string; aiSuggestionStatus: string; suggestedClassification: string | null; derivedClassification: string | null; category: string | null } }>(enrichment);
+    expect(enriched.observation.originalText).toBe(createdBody.observation.originalText);
+    expect(enriched.observation.aiSuggestionStatus).toBe("ready");
+    expect(enriched.observation.suggestedClassification).toBe("corrected_in_field");
+
+    const edited = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        derivedClassification: "concern",
+        category: "Aerial lifts",
+        derivedSummary: "Reviewer kept as a concern for trend awareness.",
+        aiSuggestionsRejected: true
+      })
+    });
+    expect(edited.status).toBe(200);
+
+    const rerun = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}/enrichment-runs`, {
+      method: "POST",
+      headers: { cookie }
+    });
+    expect(rerun.status).toBe(201);
+    const rerunBody = await json<{ observation: { derivedClassification: string | null; aiSuggestionsRejected: boolean } }>(rerun);
+    expect(rerunBody.observation.derivedClassification).toBe("concern");
+    expect(rerunBody.observation.aiSuggestionsRejected).toBe(true);
+
+    const closed = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ followUpStatus: "verified_closed", followUpNote: "Verified during afternoon walk." })
+    });
+    expect(closed.status).toBe(200);
+
+    const planSource = await uploadTextSource(cookie, "Field Plan", "Fall protection and lift rail controls are described.");
+    const plan = await fetch(`${baseUrl}/api/engagements/${engagement.id}/safety-plans`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        engagementId: engagement.id,
+        title: "Field Safety Plan",
+        planType: "fall_protection_plan",
+        sourceId: planSource.id,
+        revisionIdentifier: "Rev 0"
+      })
+    });
+    const planBody = await json<{ safetyPlan: { plan: { id: string } } }>(plan);
+    const review = await fetch(`${baseUrl}/api/safety-plans/${planBody.safetyPlan.plan.id}/review-runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ selectedReferences: [{ sourceId: planSource.id, authorityClassification: "general_reference" }] })
+    });
+    const reviewBody = await json<{ safetyPlan: { findings: Array<{ id: string }> } }>(review);
+    const link = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}/plan-findings`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ findingId: reviewBody.safetyPlan.findings[0].id, note: "Same lift control topic." })
+    });
+    expect(link.status).toBe(201);
+    const duplicateLink = await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}/plan-findings`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ findingId: reviewBody.safetyPlan.findings[0].id })
+    });
+    expect(duplicateLink.status).toBe(409);
+
+    const filtered = await json<{ observations: Array<{ id: string }> }>(
+      await fetch(`${baseUrl}/api/observations?projectId=${project.id}&classification=concern&followUpStatus=verified_closed`, { headers: { cookie } })
+    );
+    expect(filtered.observations).toContainEqual(expect.objectContaining({ id: createdBody.observation.id }));
+
+    const reopened = await json<{ observation: { originalText: string; photos: unknown[]; planFindingLinks: unknown[]; auditEvents: unknown[] } }>(
+      await fetch(`${baseUrl}/api/observations/${createdBody.observation.id}`, { headers: { cookie } })
+    );
+    expect(reopened.observation.originalText).toBe(createdBody.observation.originalText);
+    expect(reopened.observation.photos).toHaveLength(1);
+    expect(reopened.observation.planFindingLinks).toHaveLength(1);
+    expect(reopened.observation.auditEvents.length).toBeGreaterThanOrEqual(6);
+
+    const removedPhoto = await fetch(`${baseUrl}/api/observation-photos/${attachedBody.photo.id}`, { method: "DELETE", headers: { cookie } });
+    expect(removedPhoto.status).toBe(204);
+    const sourceStillExists = await fetch(`${baseUrl}/api/sources/${imageBody.sources[0].id}`, { headers: { cookie } });
+    expect(sourceStillExists.status).toBe(200);
+
+    const invalid = await fetch(`${baseUrl}/api/observations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ projectId: project.id, originalText: "" })
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   async function login(): Promise<string> {
     const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",

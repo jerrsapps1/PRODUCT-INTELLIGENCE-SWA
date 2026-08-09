@@ -6,6 +6,10 @@ import type {
   ContractorReadinessDetail,
   ContractorReadinessSummary,
   ContractorRequirementStatus,
+  FieldObservation,
+  ObservationClassification,
+  ObservationDetail,
+  ObservationFollowUpStatus,
   Project,
   ProjectContractorEngagement,
   ProjectSourceLink,
@@ -62,6 +66,20 @@ const findingAuthorityOptions: Array<{ value: PlanFindingAuthority; label: strin
   { value: "project_requirement", label: "Project requirement" },
   { value: "recommendation", label: "Recommendation" },
   { value: "reviewer_decision", label: "Reviewer decision" }
+];
+
+const observationClassificationOptions: Array<{ value: ObservationClassification; label: string }> = [
+  { value: "positive", label: "Positive" },
+  { value: "neutral", label: "Neutral / informational" },
+  { value: "concern", label: "Concern" },
+  { value: "corrected_in_field", label: "Corrected in field" },
+  { value: "follow_up_required", label: "Follow-up required" }
+];
+
+const followUpOptions: Array<{ value: ObservationFollowUpStatus; label: string }> = [
+  { value: "none", label: "None" },
+  { value: "needed", label: "Follow-up needed" },
+  { value: "verified_closed", label: "Verified / closed" }
 ];
 
 const authorityOptions: Array<{ value: AuthorityClassification; label: string }> = [
@@ -173,6 +191,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [safetyPlans, setSafetyPlans] = useState<SafetyPlan[]>([]);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [activePlan, setActivePlan] = useState<SafetyPlanDetail | null>(null);
+  const [observations, setObservations] = useState<FieldObservation[]>([]);
+  const [activeObservationId, setActiveObservationId] = useState<string | null>(null);
+  const [activeObservation, setActiveObservation] = useState<ObservationDetail | null>(null);
   const [activeView, setActiveView] = useState<View>("workspace");
   const [status, setStatus] = useState("Loading records...");
   const [error, setError] = useState("");
@@ -237,6 +258,27 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     setActivePlanId((current) => current ?? body.plans[0]?.id ?? null);
   }
 
+  async function reloadObservations(projectId = selectedProjectId) {
+    if (!projectId) {
+      setObservations([]);
+      setActiveObservationId(null);
+      setActiveObservation(null);
+      return;
+    }
+    const body = await api<{ observations: FieldObservation[] }>(`/api/observations?projectId=${projectId}`);
+    setObservations(body.observations);
+    setActiveObservationId((current) => current ?? body.observations[0]?.id ?? null);
+  }
+
+  async function reloadActiveObservation(observationId = activeObservationId) {
+    if (!observationId) {
+      setActiveObservation(null);
+      return;
+    }
+    const body = await api<{ observation: ObservationDetail }>(`/api/observations/${observationId}`);
+    setActiveObservation(body.observation);
+  }
+
   async function reloadActivePlan(planId = activePlanId) {
     if (!planId) {
       setActivePlan(null);
@@ -285,6 +327,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setSafetyPlans([]);
       setActivePlanId(null);
       setActivePlan(null);
+      setObservations([]);
+      setActiveObservationId(null);
+      setActiveObservation(null);
       return;
     }
     api<{ engagements: ProjectContractorEngagement[] }>(`/api/projects/${selectedProjectId}/contractors`)
@@ -298,6 +343,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     );
     reloadReadinessRequirements(selectedProjectId).catch((loadError) =>
       setError(loadError instanceof Error ? loadError.message : "Unable to load readiness")
+    );
+    reloadObservations(selectedProjectId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load observations")
     );
   }, [selectedProjectId]);
 
@@ -325,6 +373,12 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setError(loadError instanceof Error ? loadError.message : "Unable to load plan review")
     );
   }, [activePlanId]);
+
+  useEffect(() => {
+    reloadActiveObservation(activeObservationId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load observation")
+    );
+  }, [activeObservationId]);
 
   async function logout() {
     await api<void>("/api/auth/logout", { method: "POST" });
@@ -388,6 +442,7 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             readiness={activeReadiness}
             summaries={readinessSummaries}
             activePlan={activePlan}
+            activeObservation={activeObservation}
           />
         </section>
 
@@ -439,6 +494,25 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
                 await reloadActivePlan(planId);
               } else {
                 await reloadActivePlan();
+              }
+            }}
+          />
+          <FieldOperationsWorkbench
+            project={selectedProject}
+            engagements={engagements}
+            observations={observations}
+            activeObservationId={activeObservationId}
+            onOpenObservation={(id) => {
+              setActiveObservationId(id);
+              setActivePlanId(null);
+              setActiveSourceId(null);
+              setActiveView("workspace");
+            }}
+            onChanged={async (observationId) => {
+              await reloadObservations(selectedProjectId);
+              if (observationId) {
+                setActiveObservationId(observationId);
+                await reloadActiveObservation(observationId);
               }
             }}
           />
@@ -557,7 +631,8 @@ function WorkspacePanel({
   activeSource,
   readiness,
   summaries,
-  activePlan
+  activePlan,
+  activeObservation
 }: {
   project: Project | null;
   engagements: ProjectContractorEngagement[];
@@ -566,6 +641,7 @@ function WorkspacePanel({
   readiness: ContractorReadinessDetail | null;
   summaries: ContractorReadinessSummary[];
   activePlan: SafetyPlanDetail | null;
+  activeObservation: ObservationDetail | null;
 }) {
   if (!project) {
     return <div className="empty-state"><h2>No project open</h2><p>Create or select a blank project from the left panel.</p></div>;
@@ -582,7 +658,9 @@ function WorkspacePanel({
       </div>
       <section className="foundation-grid">
         <div>
-          {activePlan ? (
+          {activeObservation ? (
+            <FieldObservationView detail={activeObservation} />
+          ) : activePlan ? (
             <PlanReviewView detail={activePlan} />
           ) : activeSource ? (
             <SourceDetailView source={activeSource} />
@@ -608,6 +686,57 @@ function WorkspacePanel({
         </div>
       </section>
     </>
+  );
+}
+
+function FieldObservationView({ detail }: { detail: ObservationDetail }) {
+  return (
+    <section className="plan-review" aria-labelledby="observation-title">
+      <div className="project-heading compact-heading">
+        <div>
+          <p className="eyebrow">Field observation</p>
+          <h3 id="observation-title">{detail.category ?? "General observation"}</h3>
+        </div>
+        <span>{observationLabel(detail.derivedClassification) ?? "Unclassified"}</span>
+      </div>
+      <div className="review-columns">
+        <article className="review-pane">
+          <p className="eyebrow">Original note</p>
+          <h4>{detail.engagement?.contractor?.legalName ?? "Project-level observation"}</h4>
+          <p>{detail.originalText}</p>
+          <p className="empty">{new Date(detail.observedAt).toLocaleString()} {detail.location ? `- ${detail.location}` : ""}</p>
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">Reviewer fields</p>
+          <h4>{detail.activity ?? "Activity not specified"}</h4>
+          <p>{detail.derivedSummary ?? "No reviewer summary yet."}</p>
+          <p><strong>Follow-up:</strong> {followUpLabel(detail.followUpStatus)}</p>
+          {detail.followUpNote ? <p>{detail.followUpNote}</p> : null}
+          {detail.recurrenceSummary ? <p className="suggested-text">{detail.recurrenceSummary}</p> : null}
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">Suggestions / links</p>
+          <h4>{detail.aiSuggestionStatus.replace(/_/g, " ")}</h4>
+          <p>{detail.suggestedSummary ?? "No AI suggestions have been applied."}</p>
+          <p>{detail.referenceLinks.length} reference suggestion{detail.referenceLinks.length === 1 ? "" : "s"} - {detail.planFindingLinks.length} plan finding link{detail.planFindingLinks.length === 1 ? "" : "s"}</p>
+        </article>
+      </div>
+      <div className="readiness-strip">
+        <span>{detail.photos.length} photo{detail.photos.length === 1 ? "" : "s"}</span>
+        <span>{detail.auditEvents.length} audit event{detail.auditEvents.length === 1 ? "" : "s"}</span>
+        <span>Original preserved</span>
+      </div>
+      {detail.photos.length > 0 ? (
+        <div className="photo-strip">
+          {detail.photos.map((photo) => (
+            <a key={photo.id} href={`/api/sources/${photo.sourceId}/original`} target="_blank" rel="noreferrer">
+              <img src={`/api/sources/${photo.sourceId}/original`} alt={photo.caption ?? photo.source?.title ?? "Observation photo"} />
+              <span>{photo.caption ?? photo.source?.title ?? "Photo"}</span>
+            </a>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1449,6 +1578,175 @@ function PlanReviewWorkbench({
   );
 }
 
+function FieldOperationsWorkbench({
+  project,
+  engagements,
+  observations,
+  activeObservationId,
+  onOpenObservation,
+  onChanged
+}: {
+  project: Project | null;
+  engagements: ProjectContractorEngagement[];
+  observations: FieldObservation[];
+  activeObservationId: string | null;
+  onOpenObservation: (id: string) => void;
+  onChanged: (observationId?: string) => Promise<void>;
+}) {
+  const [engagementId, setEngagementId] = useState("");
+  const [text, setText] = useState("");
+  const [location, setLocation] = useState("");
+  const [activity, setActivity] = useState("");
+  const [category, setCategory] = useState("");
+  const [classification, setClassification] = useState<ObservationClassification | "">("");
+  const [followUpNeeded, setFollowUpNeeded] = useState(false);
+  const [photos, setPhotos] = useState<FileList | null>(null);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  async function run(action: () => Promise<void>, message: string) {
+    setError("");
+    setStatus(message);
+    try {
+      await action();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Field operation failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  async function createObservation(event: FormEvent) {
+    event.preventDefault();
+    if (!project) return;
+    await run(async () => {
+      const created = await api<{ observation: ObservationDetail }>("/api/observations", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: project.id,
+          engagementId,
+          originalText: text,
+          location,
+          activity,
+          category,
+          classification: classification || undefined,
+          followUpNeeded
+        })
+      });
+      if (photos) {
+        for (const file of Array.from(photos)) {
+          const form = new FormData();
+          form.append("title", `${created.observation.category ?? "Observation photo"} - ${file.name}`);
+          form.append("scope", "project");
+          form.append("projectId", project.id);
+          form.append("authorityClassification", "working_document");
+          form.append("userConfirmedClassification", "true");
+          form.append("file", file);
+          const upload = await api<{ sources: SourceRecord[] }>("/api/sources/upload", { method: "POST", body: form });
+          await api<{ photo: unknown }>(`/api/observations/${created.observation.id}/photos`, {
+            method: "POST",
+            body: JSON.stringify({ sourceId: upload.sources[0].id, caption: file.name })
+          });
+        }
+      }
+      setText("");
+      setLocation("");
+      setActivity("");
+      setCategory("");
+      setClassification("");
+      setFollowUpNeeded(false);
+      setPhotos(null);
+      await onChanged(created.observation.id);
+    }, "Saving observation...");
+  }
+
+  async function runSuggestions() {
+    if (!activeObservationId) return;
+    await run(async () => {
+      await api<{ observation: ObservationDetail }>(`/api/observations/${activeObservationId}/enrichment-runs`, { method: "POST" });
+      await onChanged(activeObservationId);
+    }, "Processing suggestions...");
+  }
+
+  async function updateActive(input: Record<string, unknown>) {
+    if (!activeObservationId) return;
+    await run(async () => {
+      await api<{ observation: ObservationDetail }>(`/api/observations/${activeObservationId}`, {
+        method: "PATCH",
+        body: JSON.stringify(input)
+      });
+      await onChanged(activeObservationId);
+    }, "Updating observation...");
+  }
+
+  async function removeFirstPhoto() {
+    if (!activeObservationId) return;
+    const detail = await api<{ observation: ObservationDetail }>(`/api/observations/${activeObservationId}`);
+    const first = detail.observation.photos[0];
+    if (!first) return;
+    await run(async () => {
+      await api<void>(`/api/observation-photos/${first.id}`, { method: "DELETE" });
+      await onChanged(activeObservationId);
+    }, "Removing photo link...");
+  }
+
+  return (
+    <section className="workbench-section">
+      <h2>Field operations</h2>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {status ? <p className="banner muted">{status}</p> : null}
+      <form onSubmit={createObservation} className="stack compact">
+        <label htmlFor="observation-contractor">Contractor
+          <select id="observation-contractor" value={engagementId} onChange={(event) => setEngagementId(event.target.value)} disabled={!project}>
+            <option value="">Project-level / general</option>
+            {engagements.map((engagement) => <option key={engagement.id} value={engagement.id}>{engagement.contractor?.legalName ?? engagement.contractorId}</option>)}
+          </select>
+        </label>
+        <label htmlFor="observation-text">Observation<textarea id="observation-text" value={text} onChange={(event) => setText(event.target.value)} disabled={!project} /></label>
+        <label htmlFor="observation-location">Location<input id="observation-location" value={location} onChange={(event) => setLocation(event.target.value)} /></label>
+        <label htmlFor="observation-activity">Activity<input id="observation-activity" value={activity} onChange={(event) => setActivity(event.target.value)} /></label>
+        <label htmlFor="observation-category">Category<input id="observation-category" value={category} onChange={(event) => setCategory(event.target.value)} /></label>
+        <label htmlFor="observation-classification">Classification
+          <select id="observation-classification" value={classification} onChange={(event) => setClassification(event.target.value as ObservationClassification | "")}>
+            <option value="">Unclassified</option>
+            {observationClassificationOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label className="check-row" htmlFor="observation-follow-up"><input id="observation-follow-up" type="checkbox" checked={followUpNeeded} onChange={(event) => setFollowUpNeeded(event.target.checked)} />Follow-up needed</label>
+        <label htmlFor="observation-photos">Photos<input id="observation-photos" type="file" accept="image/*" multiple onChange={(event) => setPhotos(event.target.files)} /></label>
+        <button className="primary" disabled={!project || !text.trim()}>Save observation</button>
+      </form>
+      <div className="stack compact">
+        <h3>Recent observations</h3>
+        {observations.map((observation) => (
+          <button key={observation.id} className={observation.id === activeObservationId ? "row active" : "row"} type="button" onClick={() => onOpenObservation(observation.id)}>
+            <strong>{observation.engagement?.contractor?.legalName ?? "Project-level"}</strong>
+            <span>{observation.category ?? "General"} - {observationLabel(observation.derivedClassification) ?? "Unclassified"} - {followUpLabel(observation.followUpStatus)}</span>
+          </button>
+        ))}
+      </div>
+      <div className="stack compact">
+        <h3>Active observation</h3>
+        <button className="secondary" type="button" disabled={!activeObservationId} onClick={runSuggestions}>Run suggestions</button>
+        <label htmlFor="active-observation-classification">Classification
+          <select id="active-observation-classification" disabled={!activeObservationId} onChange={(event) => updateActive({ derivedClassification: event.target.value }).catch(() => undefined)}>
+            <option value="">Set classification</option>
+            {observationClassificationOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label htmlFor="active-observation-followup">Follow-up
+          <select id="active-observation-followup" disabled={!activeObservationId} onChange={(event) => updateActive({ followUpStatus: event.target.value }).catch(() => undefined)}>
+            <option value="">Set follow-up</option>
+            {followUpOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <button className="ghost" type="button" disabled={!activeObservationId} onClick={() => updateActive({ aiSuggestionsRejected: true })}>Reject suggestions</button>
+        <button className="ghost" type="button" disabled={!activeObservationId} onClick={removeFirstPhoto}>Unlink first photo</button>
+      </div>
+    </section>
+  );
+}
+
 function authorityLabel(value: AuthorityClassification): string {
   return authorityOptions.find((option) => option.value === value)?.label ?? value;
 }
@@ -1474,6 +1772,15 @@ function findingTypeLabel(value: PlanFindingType): string {
 
 function findingAuthorityLabel(value: PlanFindingAuthority): string {
   return findingAuthorityOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function observationLabel(value: ObservationClassification | null): string | null {
+  if (!value) return null;
+  return observationClassificationOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function followUpLabel(value: ObservationFollowUpStatus): string {
+  return followUpOptions.find((option) => option.value === value)?.label ?? value;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -42,6 +42,19 @@ import type {
   PlanReviewAuditEvent,
   ResubmissionComparison,
   ResubmissionComparisonCreateInput,
+  FieldObservation,
+  ObservationAuditEvent,
+  ObservationCreateInput,
+  ObservationDetail,
+  ObservationPhoto,
+  ObservationPhotoAttachInput,
+  ObservationPhotoUpdateInput,
+  ObservationPlanFindingLink,
+  ObservationPlanFindingLinkInput,
+  ObservationReferenceLink,
+  ObservationReferenceLinkInput,
+  ObservationSearchInput,
+  ObservationUpdateInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -51,6 +64,9 @@ import type {
 import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
+  DuplicateObservationPhotoError,
+  DuplicateObservationPlanFindingLinkError,
+  DuplicateObservationReferenceError,
   DuplicateProjectSourceError,
   DuplicatePlanRevisionSourceError,
   DuplicateRequirementApplicationError,
@@ -58,6 +74,7 @@ import {
   type StoredUser
 } from "../store";
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
+import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
 
 function now(): string {
   return new Date().toISOString();
@@ -89,6 +106,11 @@ export class MemoryStore implements AppStore {
   private planFindings = new Map<string, PlanFinding>();
   private planComparisons = new Map<string, ResubmissionComparison>();
   private planAuditEvents: PlanReviewAuditEvent[] = [];
+  private observations = new Map<string, FieldObservation>();
+  private observationPhotos = new Map<string, ObservationPhoto>();
+  private observationReferences = new Map<string, ObservationReferenceLink>();
+  private observationPlanFindingLinks = new Map<string, ObservationPlanFindingLink>();
+  private observationAuditEvents: ObservationAuditEvent[] = [];
 
   async migrate(): Promise<void> {}
 
@@ -882,6 +904,263 @@ export class MemoryStore implements AppStore {
     return comparisons;
   }
 
+  async listObservations(userId: string, filters: ObservationSearchInput): Promise<FieldObservation[]> {
+    if (!(await this.getProject(userId, filters.projectId))) return [];
+    return [...this.observations.values()]
+      .filter((observation) => observation.projectId === filters.projectId)
+      .filter((observation) => !filters.engagementId || observation.engagementId === filters.engagementId)
+      .filter((observation) => !filters.classification || observation.derivedClassification === filters.classification)
+      .filter((observation) => !filters.category || observation.category === filters.category)
+      .filter((observation) => !filters.followUpStatus || observation.followUpStatus === filters.followUpStatus)
+      .filter((observation) => !filters.dateFrom || observation.observedAt.slice(0, 10) >= filters.dateFrom)
+      .filter((observation) => !filters.dateTo || observation.observedAt.slice(0, 10) <= filters.dateTo)
+      .map((observation) => this.withObservationContext(observation))
+      .sort((a, b) => b.observedAt.localeCompare(a.observedAt));
+  }
+
+  async createObservation(userId: string, input: ObservationCreateInput): Promise<ObservationDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    const engagement = input.engagementId ? await this.getEngagementForUser(userId, input.engagementId) : null;
+    if (input.engagementId && (!engagement || engagement.projectId !== input.projectId)) {
+      throw new Error("Observation engagement must belong to the selected project");
+    }
+    const timestamp = now();
+    const observation: FieldObservation = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      engagementId: engagement?.id ?? null,
+      contractorId: engagement?.contractorId ?? null,
+      creatorUserId: userId,
+      originalText: input.originalText.trim(),
+      observedAt: clean(input.observedAt) ?? timestamp,
+      location: clean(input.location),
+      activity: clean(input.activity),
+      derivedClassification: input.classification ?? null,
+      category: clean(input.category),
+      derivedSummary: null,
+      reviewerNote: clean(input.reviewerNote),
+      followUpStatus: input.followUpNeeded ? "needed" : "none",
+      followUpNote: null,
+      followUpDueDate: null,
+      followUpVerifiedAt: null,
+      followUpVerifiedByUserId: null,
+      aiSuggestionStatus: "saved",
+      suggestedClassification: null,
+      suggestedCategory: null,
+      suggestedActivity: null,
+      suggestedSummary: null,
+      suggestedFollowUpStatus: null,
+      aiErrorState: null,
+      aiSuggestionsRejected: false,
+      recurrenceCount: 0,
+      recurrenceSummary: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.observations.set(observation.id, observation);
+    this.refreshObservationRecurrence(observation.id);
+    this.addObservationAudit(userId, observation.id, "created", `Created observation: ${observation.originalText}`);
+    return (await this.getObservation(userId, observation.id)) as ObservationDetail;
+  }
+
+  async getObservation(userId: string, observationId: string): Promise<ObservationDetail | null> {
+    const observation = this.observations.get(observationId);
+    if (!observation || !(await this.getProject(userId, observation.projectId))) return null;
+    return this.buildObservationDetail(observation);
+  }
+
+  async updateObservation(userId: string, observationId: string, input: ObservationUpdateInput): Promise<ObservationDetail | null> {
+    const current = this.observations.get(observationId);
+    if (!current || !(await this.getProject(userId, current.projectId))) return null;
+    const closing = input.followUpStatus === "verified_closed" && current.followUpStatus !== "verified_closed";
+    const updated: FieldObservation = {
+      ...current,
+      derivedClassification: input.derivedClassification ?? current.derivedClassification,
+      category: input.category === undefined ? current.category : clean(input.category),
+      activity: input.activity === undefined ? current.activity : clean(input.activity),
+      location: input.location === undefined ? current.location : clean(input.location),
+      derivedSummary: input.derivedSummary === undefined ? current.derivedSummary : clean(input.derivedSummary),
+      reviewerNote: input.reviewerNote === undefined ? current.reviewerNote : clean(input.reviewerNote),
+      followUpStatus: input.followUpStatus ?? current.followUpStatus,
+      followUpNote: input.followUpNote === undefined ? current.followUpNote : clean(input.followUpNote),
+      followUpDueDate: input.followUpDueDate === undefined ? current.followUpDueDate : clean(input.followUpDueDate),
+      followUpVerifiedAt: closing ? now() : current.followUpVerifiedAt,
+      followUpVerifiedByUserId: closing ? userId : current.followUpVerifiedByUserId,
+      aiSuggestionsRejected: input.aiSuggestionsRejected ?? current.aiSuggestionsRejected,
+      updatedAt: now()
+    };
+    this.observations.set(observationId, updated);
+    this.refreshObservationRecurrence(observationId);
+    this.addObservationAudit(userId, observationId, "updated", "Updated observation classification, category, location, activity, or follow-up fields");
+    if (closing) this.addObservationAudit(userId, observationId, "closed_verified", "Verified and closed observation follow-up");
+    return this.getObservation(userId, observationId);
+  }
+
+  async attachObservationPhoto(userId: string, observationId: string, input: ObservationPhotoAttachInput): Promise<ObservationPhoto> {
+    const observation = await this.getObservation(userId, observationId);
+    if (!observation) throw new Error("Observation not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    if (source.sourceType !== "image") throw new Error("Observation photos must use image sources");
+    if (source.projectId && source.projectId !== observation.projectId) throw new Error("Photo source must belong to the observation project");
+    const duplicate = [...this.observationPhotos.values()].find((photo) => photo.observationId === observationId && photo.sourceId === input.sourceId);
+    if (duplicate) throw new DuplicateObservationPhotoError();
+    const timestamp = now();
+    const photo: ObservationPhoto = {
+      id: randomUUID(),
+      observationId,
+      sourceId: source.id,
+      caption: clean(input.caption),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      source
+    };
+    this.observationPhotos.set(photo.id, photo);
+    this.addObservationAudit(userId, observationId, "photo_added", `Added photo source: ${source.title}`);
+    return photo;
+  }
+
+  async updateObservationPhoto(userId: string, photoId: string, input: ObservationPhotoUpdateInput): Promise<ObservationPhoto | null> {
+    const current = this.observationPhotos.get(photoId);
+    if (!current || !(await this.getObservation(userId, current.observationId))) return null;
+    const updated = { ...current, caption: input.caption === undefined ? current.caption : clean(input.caption), updatedAt: now() };
+    this.observationPhotos.set(photoId, updated);
+    this.addObservationAudit(userId, current.observationId, "photo_caption_updated", "Updated observation photo caption");
+    return { ...updated, source: this.sources.get(updated.sourceId) };
+  }
+
+  async removeObservationPhoto(userId: string, photoId: string): Promise<void> {
+    const current = this.observationPhotos.get(photoId);
+    if (!current || !(await this.getObservation(userId, current.observationId))) return;
+    this.observationPhotos.delete(photoId);
+    this.addObservationAudit(userId, current.observationId, "photo_removed", "Removed photo association; original source was preserved");
+  }
+
+  async runObservationEnrichment(userId: string, observationId: string): Promise<ObservationDetail | null> {
+    const current = this.observations.get(observationId);
+    if (!current || !(await this.getProject(userId, current.projectId))) return null;
+    this.observations.set(observationId, { ...current, aiSuggestionStatus: "processing", aiErrorState: null, updatedAt: now() });
+    this.addObservationAudit(userId, observationId, "ai_processing_run", "Started observation suggestion processing");
+    try {
+      const query = buildObservationReferenceQuery(current);
+      const chunks = await this.searchSourceChunks(userId, { q: query, projectId: current.projectId, activeOnly: true });
+      const assistant = await runObservationAssistant({
+        originalText: current.originalText,
+        activity: current.activity,
+        category: current.category,
+        existingReferences: chunks
+      });
+      const latest = this.observations.get(observationId) as FieldObservation;
+      const updated: FieldObservation = {
+        ...latest,
+        aiSuggestionStatus: "ready",
+        suggestedClassification: assistant.classification,
+        suggestedCategory: assistant.category,
+        suggestedActivity: assistant.activity,
+        suggestedSummary: assistant.summary,
+        suggestedFollowUpStatus: assistant.followUpStatus,
+        aiErrorState: null,
+        derivedClassification: latest.derivedClassification ?? (latest.aiSuggestionsRejected ? null : assistant.classification),
+        category: latest.category ?? (latest.aiSuggestionsRejected ? null : assistant.category),
+        activity: latest.activity ?? (latest.aiSuggestionsRejected ? null : assistant.activity),
+        derivedSummary: latest.derivedSummary ?? (latest.aiSuggestionsRejected ? null : assistant.summary),
+        followUpStatus: latest.followUpStatus === "none" && !latest.aiSuggestionsRejected ? assistant.followUpStatus : latest.followUpStatus,
+        updatedAt: now()
+      };
+      this.observations.set(observationId, updated);
+      for (const suggestion of assistant.referenceSuggestions) {
+        if (![...this.observationReferences.values()].some((link) => link.observationId === observationId && link.sourceId === suggestion.sourceId && link.sourceChunkId === suggestion.sourceChunkId)) {
+          const link: ObservationReferenceLink = {
+            id: randomUUID(),
+            observationId,
+            sourceId: suggestion.sourceId,
+            sourceChunkId: suggestion.sourceChunkId,
+            citationLabel: suggestion.citationLabel,
+            suggested: true,
+            accepted: false,
+            createdAt: now(),
+            source: this.sources.get(suggestion.sourceId)
+          };
+          this.observationReferences.set(link.id, link);
+        }
+      }
+      this.addObservationAudit(userId, observationId, "ai_processing_result", `Suggestions ready from ${assistant.provider}`);
+      return this.getObservation(userId, observationId);
+    } catch (error) {
+      const latest = this.observations.get(observationId);
+      if (latest) {
+        this.observations.set(observationId, {
+          ...latest,
+          aiSuggestionStatus: "failed",
+          aiErrorState: error instanceof Error ? error.message : "Observation suggestion processing failed",
+          updatedAt: now()
+        });
+      }
+      this.addObservationAudit(userId, observationId, "ai_processing_failed", "Observation was saved, but suggestions failed");
+      return this.getObservation(userId, observationId);
+    }
+  }
+
+  async linkObservationReference(userId: string, observationId: string, input: ObservationReferenceLinkInput): Promise<ObservationReferenceLink> {
+    const observation = await this.getObservation(userId, observationId);
+    if (!observation) throw new Error("Observation not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    this.ensureSelectableReviewReference(observation.projectId, source);
+    const duplicate = [...this.observationReferences.values()].find((link) => link.observationId === observationId && link.sourceId === input.sourceId && link.sourceChunkId === clean(input.sourceChunkId));
+    if (duplicate) throw new DuplicateObservationReferenceError();
+    const link: ObservationReferenceLink = {
+      id: randomUUID(),
+      observationId,
+      sourceId: source.id,
+      sourceChunkId: clean(input.sourceChunkId),
+      citationLabel: clean(input.citationLabel),
+      suggested: input.suggested,
+      accepted: input.accepted,
+      createdAt: now(),
+      source
+    };
+    this.observationReferences.set(link.id, link);
+    this.addObservationAudit(userId, observationId, "reference_link_added", `Linked reference: ${source.title}`);
+    return link;
+  }
+
+  async unlinkObservationReference(userId: string, linkId: string): Promise<void> {
+    const link = this.observationReferences.get(linkId);
+    if (!link || !(await this.getObservation(userId, link.observationId))) return;
+    this.observationReferences.delete(linkId);
+    this.addObservationAudit(userId, link.observationId, "reference_link_removed", "Removed observation reference link");
+  }
+
+  async linkObservationPlanFinding(userId: string, observationId: string, input: ObservationPlanFindingLinkInput): Promise<ObservationPlanFindingLink> {
+    const observation = await this.getObservation(userId, observationId);
+    if (!observation) throw new Error("Observation not found");
+    const finding = await this.getPlanFindingForObservation(userId, input.findingId, observation.projectId);
+    if (!finding) throw new Error("Plan finding not found");
+    const duplicate = [...this.observationPlanFindingLinks.values()].find((link) => link.observationId === observationId && link.findingId === input.findingId);
+    if (duplicate) throw new DuplicateObservationPlanFindingLinkError();
+    const link: ObservationPlanFindingLink = {
+      id: randomUUID(),
+      observationId,
+      findingId: finding.id,
+      suggested: input.suggested,
+      accepted: input.accepted,
+      note: clean(input.note),
+      createdAt: now(),
+      finding
+    };
+    this.observationPlanFindingLinks.set(link.id, link);
+    this.addObservationAudit(userId, observationId, "plan_finding_link_added", `Linked plan finding: ${finding.title}`);
+    return link;
+  }
+
+  async unlinkObservationPlanFinding(userId: string, linkId: string): Promise<void> {
+    const link = this.observationPlanFindingLinks.get(linkId);
+    if (!link || !(await this.getObservation(userId, link.observationId))) return;
+    this.observationPlanFindingLinks.delete(linkId);
+    this.addObservationAudit(userId, link.observationId, "plan_finding_link_removed", "Removed plan finding link");
+  }
+
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
     const engagement = this.engagements.get(engagementId);
     if (!engagement || !(await this.getProject(userId, engagement.projectId))) return null;
@@ -898,6 +1177,59 @@ export class MemoryStore implements AppStore {
     const review = this.planReviews.get(reviewId);
     if (!review || !(await this.getPlanForUser(userId, review.planId))) return null;
     return review;
+  }
+
+  private async getPlanFindingForObservation(userId: string, findingId: string, projectId: string): Promise<PlanFinding | null> {
+    const finding = this.planFindings.get(findingId);
+    if (!finding) return null;
+    const review = await this.getReviewForUser(userId, finding.reviewId);
+    if (!review) return null;
+    const plan = await this.getPlanForUser(userId, review.planId);
+    return plan?.projectId === projectId ? finding : null;
+  }
+
+  private buildObservationDetail(observation: FieldObservation): ObservationDetail {
+    return {
+      ...this.withObservationContext(observation),
+      photos: [...this.observationPhotos.values()]
+        .filter((photo) => photo.observationId === observation.id)
+        .map((photo) => ({ ...photo, source: this.sources.get(photo.sourceId) })),
+      referenceLinks: [...this.observationReferences.values()]
+        .filter((link) => link.observationId === observation.id)
+        .map((link) => ({ ...link, source: this.sources.get(link.sourceId) })),
+      planFindingLinks: [...this.observationPlanFindingLinks.values()]
+        .filter((link) => link.observationId === observation.id)
+        .map((link) => ({ ...link, finding: this.planFindings.get(link.findingId) })),
+      auditEvents: this.observationAuditEvents
+        .filter((event) => event.observationId === observation.id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    };
+  }
+
+  private withObservationContext(observation: FieldObservation): FieldObservation {
+    const engagement = observation.engagementId ? this.engagements.get(observation.engagementId) : undefined;
+    return {
+      ...observation,
+      engagement: engagement ? { ...engagement, contractor: this.contractors.get(engagement.contractorId) } : undefined
+    };
+  }
+
+  private refreshObservationRecurrence(observationId: string): void {
+    const observation = this.observations.get(observationId);
+    if (!observation) return;
+    const comparable = [...this.observations.values()].filter((item) =>
+      item.id !== observation.id &&
+      item.projectId === observation.projectId &&
+      (observation.engagementId ? item.engagementId === observation.engagementId : true) &&
+      Boolean(observation.category) &&
+      item.category === observation.category
+    );
+    const recurrenceCount = comparable.length;
+    this.observations.set(observationId, {
+      ...observation,
+      recurrenceCount,
+      recurrenceSummary: recurrenceCount > 0 ? `${recurrenceCount} prior observation${recurrenceCount === 1 ? "" : "s"} share this project/category context.` : null
+    });
   }
 
   private hasHumanPlanReviewWork(reviewId: string): boolean {
@@ -1137,6 +1469,17 @@ export class MemoryStore implements AppStore {
       id: randomUUID(),
       planId,
       reviewId,
+      eventType,
+      message,
+      actorUserId: userId,
+      createdAt: now()
+    });
+  }
+
+  private addObservationAudit(userId: string, observationId: string, eventType: string, message: string) {
+    this.observationAuditEvents.push({
+      id: randomUUID(),
+      observationId,
       eventType,
       message,
       actorUserId: userId,

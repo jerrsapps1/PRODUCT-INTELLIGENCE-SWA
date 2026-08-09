@@ -43,6 +43,19 @@ import type {
   PlanReviewAuditEvent,
   ResubmissionComparison,
   ResubmissionComparisonCreateInput,
+  FieldObservation,
+  ObservationAuditEvent,
+  ObservationCreateInput,
+  ObservationDetail,
+  ObservationPhoto,
+  ObservationPhotoAttachInput,
+  ObservationPhotoUpdateInput,
+  ObservationPlanFindingLink,
+  ObservationPlanFindingLinkInput,
+  ObservationReferenceLink,
+  ObservationReferenceLinkInput,
+  ObservationSearchInput,
+  ObservationUpdateInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -52,6 +65,9 @@ import type {
 import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
+  DuplicateObservationPhotoError,
+  DuplicateObservationPlanFindingLinkError,
+  DuplicateObservationReferenceError,
   DuplicatePlanRevisionSourceError,
   DuplicateProjectSourceError,
   DuplicateRequirementApplicationError,
@@ -59,6 +75,7 @@ import {
   type StoredUser
 } from "../store";
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
+import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
 
 const { Pool } = pg;
 
@@ -383,12 +400,93 @@ CREATE TABLE IF NOT EXISTS plan_review_audit_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS field_observations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  engagement_id uuid REFERENCES project_contractor_engagements(id) ON DELETE SET NULL,
+  contractor_id uuid REFERENCES contractors(id) ON DELETE SET NULL,
+  creator_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  original_text text NOT NULL,
+  observed_at timestamptz NOT NULL DEFAULT now(),
+  location text,
+  activity text,
+  derived_classification text CHECK (derived_classification IN ('positive','neutral','concern','corrected_in_field','follow_up_required')),
+  category text,
+  derived_summary text,
+  reviewer_note text,
+  follow_up_status text NOT NULL DEFAULT 'none' CHECK (follow_up_status IN ('none','needed','verified_closed')),
+  follow_up_note text,
+  follow_up_due_date date,
+  follow_up_verified_at timestamptz,
+  follow_up_verified_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  ai_suggestion_status text NOT NULL DEFAULT 'saved' CHECK (ai_suggestion_status IN ('saved','processing','ready','failed')),
+  suggested_classification text CHECK (suggested_classification IN ('positive','neutral','concern','corrected_in_field','follow_up_required')),
+  suggested_category text,
+  suggested_activity text,
+  suggested_summary text,
+  suggested_follow_up_status text CHECK (suggested_follow_up_status IN ('none','needed','verified_closed')),
+  ai_error_state text,
+  ai_suggestions_rejected boolean NOT NULL DEFAULT false,
+  recurrence_count integer NOT NULL DEFAULT 0,
+  recurrence_summary text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS observation_photos (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  observation_id uuid NOT NULL REFERENCES field_observations(id) ON DELETE CASCADE,
+  source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  caption text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (observation_id, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS observation_reference_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  observation_id uuid NOT NULL REFERENCES field_observations(id) ON DELETE CASCADE,
+  source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  source_chunk_id uuid REFERENCES source_chunks(id) ON DELETE SET NULL,
+  citation_label text,
+  suggested boolean NOT NULL DEFAULT false,
+  accepted boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (observation_id, source_id, source_chunk_id)
+);
+
+CREATE TABLE IF NOT EXISTS observation_plan_finding_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  observation_id uuid NOT NULL REFERENCES field_observations(id) ON DELETE CASCADE,
+  finding_id uuid NOT NULL REFERENCES plan_findings(id) ON DELETE CASCADE,
+  suggested boolean NOT NULL DEFAULT false,
+  accepted boolean NOT NULL DEFAULT true,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (observation_id, finding_id)
+);
+
+CREATE TABLE IF NOT EXISTS observation_audit_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  observation_id uuid NOT NULL REFERENCES field_observations(id) ON DELETE CASCADE,
+  event_type text NOT NULL,
+  message text NOT NULL,
+  actor_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_safety_plans_engagement_id ON safety_plans(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_safety_plan_revisions_plan_id ON safety_plan_revisions(plan_id);
 CREATE INDEX IF NOT EXISTS idx_plan_reviews_plan_id ON plan_reviews(plan_id);
 CREATE INDEX IF NOT EXISTS idx_plan_review_references_review_id ON plan_review_references(review_id);
 CREATE INDEX IF NOT EXISTS idx_plan_findings_review_id ON plan_findings(review_id);
 CREATE INDEX IF NOT EXISTS idx_plan_review_audit_events_plan_id ON plan_review_audit_events(plan_id);
+CREATE INDEX IF NOT EXISTS idx_field_observations_project_id ON field_observations(project_id);
+CREATE INDEX IF NOT EXISTS idx_field_observations_engagement_id ON field_observations(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_observation_photos_observation_id ON observation_photos(observation_id);
+CREATE INDEX IF NOT EXISTS idx_observation_reference_links_observation_id ON observation_reference_links(observation_id);
+CREATE INDEX IF NOT EXISTS idx_observation_plan_finding_links_observation_id ON observation_plan_finding_links(observation_id);
+CREATE INDEX IF NOT EXISTS idx_observation_audit_events_observation_id ON observation_audit_events(observation_id);
 `;
 
 function clean(value: string | undefined): string | null {
@@ -713,6 +811,92 @@ function mapPlanAuditEvent(row: Record<string, unknown>): PlanReviewAuditEvent {
     id: String(row.id),
     planId: String(row.plan_id),
     reviewId: row.review_id ? String(row.review_id) : null,
+    eventType: String(row.event_type),
+    message: String(row.message),
+    actorUserId: String(row.actor_user_id),
+    createdAt: new Date(row.created_at as string).toISOString()
+  };
+}
+
+function mapObservation(row: Record<string, unknown>, engagement?: ProjectContractorEngagement): FieldObservation {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    engagementId: row.engagement_id ? String(row.engagement_id) : null,
+    contractorId: row.contractor_id ? String(row.contractor_id) : null,
+    creatorUserId: String(row.creator_user_id),
+    originalText: String(row.original_text),
+    observedAt: new Date(row.observed_at as string).toISOString(),
+    location: row.location ? String(row.location) : null,
+    activity: row.activity ? String(row.activity) : null,
+    derivedClassification: row.derived_classification as FieldObservation["derivedClassification"],
+    category: row.category ? String(row.category) : null,
+    derivedSummary: row.derived_summary ? String(row.derived_summary) : null,
+    reviewerNote: row.reviewer_note ? String(row.reviewer_note) : null,
+    followUpStatus: row.follow_up_status as FieldObservation["followUpStatus"],
+    followUpNote: row.follow_up_note ? String(row.follow_up_note) : null,
+    followUpDueDate: toIsoDate(row.follow_up_due_date as Date | string | null),
+    followUpVerifiedAt: row.follow_up_verified_at ? new Date(row.follow_up_verified_at as string).toISOString() : null,
+    followUpVerifiedByUserId: row.follow_up_verified_by_user_id ? String(row.follow_up_verified_by_user_id) : null,
+    aiSuggestionStatus: row.ai_suggestion_status as FieldObservation["aiSuggestionStatus"],
+    suggestedClassification: row.suggested_classification as FieldObservation["suggestedClassification"],
+    suggestedCategory: row.suggested_category ? String(row.suggested_category) : null,
+    suggestedActivity: row.suggested_activity ? String(row.suggested_activity) : null,
+    suggestedSummary: row.suggested_summary ? String(row.suggested_summary) : null,
+    suggestedFollowUpStatus: row.suggested_follow_up_status as FieldObservation["suggestedFollowUpStatus"],
+    aiErrorState: row.ai_error_state ? String(row.ai_error_state) : null,
+    aiSuggestionsRejected: Boolean(row.ai_suggestions_rejected),
+    recurrenceCount: Number(row.recurrence_count ?? 0),
+    recurrenceSummary: row.recurrence_summary ? String(row.recurrence_summary) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    engagement
+  };
+}
+
+function mapObservationPhoto(row: Record<string, unknown>, source?: SourceRecord): ObservationPhoto {
+  return {
+    id: String(row.id),
+    observationId: String(row.observation_id),
+    sourceId: String(row.source_id),
+    caption: row.caption ? String(row.caption) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    source
+  };
+}
+
+function mapObservationReference(row: Record<string, unknown>, source?: SourceRecord): ObservationReferenceLink {
+  return {
+    id: String(row.id),
+    observationId: String(row.observation_id),
+    sourceId: String(row.source_id),
+    sourceChunkId: row.source_chunk_id ? String(row.source_chunk_id) : null,
+    citationLabel: row.citation_label ? String(row.citation_label) : null,
+    suggested: Boolean(row.suggested),
+    accepted: Boolean(row.accepted),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    source
+  };
+}
+
+function mapObservationPlanFindingLink(row: Record<string, unknown>, finding?: PlanFinding): ObservationPlanFindingLink {
+  return {
+    id: String(row.id),
+    observationId: String(row.observation_id),
+    findingId: String(row.finding_id),
+    suggested: Boolean(row.suggested),
+    accepted: Boolean(row.accepted),
+    note: row.note ? String(row.note) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    finding
+  };
+}
+
+function mapObservationAudit(row: Record<string, unknown>): ObservationAuditEvent {
+  return {
+    id: String(row.id),
+    observationId: String(row.observation_id),
     eventType: String(row.event_type),
     message: String(row.message),
     actorUserId: String(row.actor_user_id),
@@ -1696,6 +1880,202 @@ export class PostgresStore implements AppStore {
     return comparisons;
   }
 
+  async listObservations(userId: string, filters: ObservationSearchInput): Promise<FieldObservation[]> {
+    if (!(await this.getProject(userId, filters.projectId))) return [];
+    const clauses = ["project_id = $1"];
+    const values: unknown[] = [filters.projectId];
+    if (filters.engagementId) { values.push(filters.engagementId); clauses.push(`engagement_id = $${values.length}`); }
+    if (filters.classification) { values.push(filters.classification); clauses.push(`derived_classification = $${values.length}`); }
+    if (filters.category) { values.push(filters.category); clauses.push(`category = $${values.length}`); }
+    if (filters.followUpStatus) { values.push(filters.followUpStatus); clauses.push(`follow_up_status = $${values.length}`); }
+    if (filters.dateFrom) { values.push(filters.dateFrom); clauses.push(`observed_at::date >= $${values.length}`); }
+    if (filters.dateTo) { values.push(filters.dateTo); clauses.push(`observed_at::date <= $${values.length}`); }
+    const result = await this.pool.query(`SELECT * FROM field_observations WHERE ${clauses.join(" AND ")} ORDER BY observed_at DESC`, values);
+    return Promise.all(result.rows.map((row) => this.mapObservationWithContext(row)));
+  }
+
+  async createObservation(userId: string, input: ObservationCreateInput): Promise<ObservationDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    const engagement = input.engagementId ? await this.getEngagementForUser(userId, input.engagementId) : null;
+    if (input.engagementId && (!engagement || engagement.projectId !== input.projectId)) throw new Error("Observation engagement must belong to the selected project");
+    const result = await this.pool.query(
+      `INSERT INTO field_observations
+       (project_id, engagement_id, contractor_id, creator_user_id, original_text, observed_at, location, activity,
+        derived_classification, category, reviewer_note, follow_up_status)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, now()), $7, $8, $9, $10, $11, $12)
+       RETURNING *`,
+      [input.projectId, engagement?.id ?? null, engagement?.contractorId ?? null, userId, input.originalText.trim(), clean(input.observedAt), clean(input.location), clean(input.activity), input.classification ?? null, clean(input.category), clean(input.reviewerNote), input.followUpNeeded ? "needed" : "none"]
+    );
+    await this.refreshObservationRecurrence(result.rows[0].id);
+    await this.addObservationAudit(userId, result.rows[0].id, "created", `Created observation: ${input.originalText.trim()}`);
+    return (await this.getObservation(userId, result.rows[0].id)) as ObservationDetail;
+  }
+
+  async getObservation(userId: string, observationId: string): Promise<ObservationDetail | null> {
+    const result = await this.pool.query(
+      `SELECT fo.*
+       FROM field_observations fo
+       JOIN projects p ON p.id = fo.project_id
+       WHERE p.owner_user_id = $1 AND fo.id = $2`,
+      [userId, observationId]
+    );
+    if (!result.rows[0]) return null;
+    return this.buildObservationDetail(userId, result.rows[0]);
+  }
+
+  async updateObservation(userId: string, observationId: string, input: ObservationUpdateInput): Promise<ObservationDetail | null> {
+    const current = await this.getObservation(userId, observationId);
+    if (!current) return null;
+    const closing = input.followUpStatus === "verified_closed" && current.followUpStatus !== "verified_closed";
+    const result = await this.pool.query(
+      `UPDATE field_observations
+       SET derived_classification = $2, category = $3, activity = $4, location = $5, derived_summary = $6,
+           reviewer_note = $7, follow_up_status = $8, follow_up_note = $9, follow_up_due_date = $10,
+           follow_up_verified_at = CASE WHEN $11 THEN now() ELSE follow_up_verified_at END,
+           follow_up_verified_by_user_id = CASE WHEN $11 THEN $12 ELSE follow_up_verified_by_user_id END,
+           ai_suggestions_rejected = $13, updated_at = now()
+       WHERE id = $1 RETURNING *`,
+      [
+        observationId,
+        input.derivedClassification ?? current.derivedClassification,
+        input.category === undefined ? current.category : clean(input.category),
+        input.activity === undefined ? current.activity : clean(input.activity),
+        input.location === undefined ? current.location : clean(input.location),
+        input.derivedSummary === undefined ? current.derivedSummary : clean(input.derivedSummary),
+        input.reviewerNote === undefined ? current.reviewerNote : clean(input.reviewerNote),
+        input.followUpStatus ?? current.followUpStatus,
+        input.followUpNote === undefined ? current.followUpNote : clean(input.followUpNote),
+        input.followUpDueDate === undefined ? current.followUpDueDate : clean(input.followUpDueDate),
+        closing,
+        userId,
+        input.aiSuggestionsRejected ?? current.aiSuggestionsRejected
+      ]
+    );
+    await this.refreshObservationRecurrence(observationId);
+    await this.addObservationAudit(userId, observationId, "updated", "Updated observation classification, category, location, activity, or follow-up fields");
+    if (closing) await this.addObservationAudit(userId, observationId, "closed_verified", "Verified and closed observation follow-up");
+    return this.buildObservationDetail(userId, result.rows[0]);
+  }
+
+  async attachObservationPhoto(userId: string, observationId: string, input: ObservationPhotoAttachInput): Promise<ObservationPhoto> {
+    const observation = await this.getObservation(userId, observationId);
+    if (!observation) throw new Error("Observation not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    if (source.sourceType !== "image") throw new Error("Observation photos must use image sources");
+    if (source.projectId && source.projectId !== observation.projectId) throw new Error("Photo source must belong to the observation project");
+    try {
+      const result = await this.pool.query("INSERT INTO observation_photos (observation_id, source_id, caption) VALUES ($1, $2, $3) RETURNING *", [observationId, source.id, clean(input.caption)]);
+      await this.addObservationAudit(userId, observationId, "photo_added", `Added photo source: ${source.title}`);
+      return mapObservationPhoto(result.rows[0], source);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicateObservationPhotoError();
+      throw error;
+    }
+  }
+
+  async updateObservationPhoto(userId: string, photoId: string, input: ObservationPhotoUpdateInput): Promise<ObservationPhoto | null> {
+    const current = await this.pool.query("SELECT * FROM observation_photos WHERE id = $1", [photoId]);
+    if (!current.rows[0] || !(await this.getObservation(userId, current.rows[0].observation_id))) return null;
+    const result = await this.pool.query("UPDATE observation_photos SET caption = $2, updated_at = now() WHERE id = $1 RETURNING *", [photoId, input.caption === undefined ? current.rows[0].caption : clean(input.caption)]);
+    await this.addObservationAudit(userId, current.rows[0].observation_id, "photo_caption_updated", "Updated observation photo caption");
+    return mapObservationPhoto(result.rows[0], (await this.getSource(userId, result.rows[0].source_id)) ?? undefined);
+  }
+
+  async removeObservationPhoto(userId: string, photoId: string): Promise<void> {
+    const current = await this.pool.query("SELECT * FROM observation_photos WHERE id = $1", [photoId]);
+    if (!current.rows[0] || !(await this.getObservation(userId, current.rows[0].observation_id))) return;
+    await this.pool.query("DELETE FROM observation_photos WHERE id = $1", [photoId]);
+    await this.addObservationAudit(userId, current.rows[0].observation_id, "photo_removed", "Removed photo association; original source was preserved");
+  }
+
+  async runObservationEnrichment(userId: string, observationId: string): Promise<ObservationDetail | null> {
+    const current = await this.getObservation(userId, observationId);
+    if (!current) return null;
+    await this.pool.query("UPDATE field_observations SET ai_suggestion_status = 'processing', ai_error_state = NULL, updated_at = now() WHERE id = $1", [observationId]);
+    await this.addObservationAudit(userId, observationId, "ai_processing_run", "Started observation suggestion processing");
+    try {
+      const chunks = await this.searchSourceChunks(userId, { q: buildObservationReferenceQuery(current), projectId: current.projectId, activeOnly: true });
+      const assistant = await runObservationAssistant({ originalText: current.originalText, activity: current.activity, category: current.category, existingReferences: chunks });
+      await this.pool.query(
+        `UPDATE field_observations
+         SET ai_suggestion_status = 'ready', suggested_classification = $2, suggested_category = $3,
+             suggested_activity = $4, suggested_summary = $5, suggested_follow_up_status = $6,
+             derived_classification = COALESCE(derived_classification, CASE WHEN ai_suggestions_rejected THEN NULL ELSE $2 END),
+             category = COALESCE(category, CASE WHEN ai_suggestions_rejected THEN NULL ELSE $3 END),
+             activity = COALESCE(activity, CASE WHEN ai_suggestions_rejected THEN NULL ELSE $4 END),
+             derived_summary = COALESCE(derived_summary, CASE WHEN ai_suggestions_rejected THEN NULL ELSE $5 END),
+             follow_up_status = CASE WHEN follow_up_status = 'none' AND NOT ai_suggestions_rejected THEN $6 ELSE follow_up_status END,
+             ai_error_state = NULL, updated_at = now()
+         WHERE id = $1`,
+        [observationId, assistant.classification, assistant.category, assistant.activity, assistant.summary, assistant.followUpStatus]
+      );
+      for (const reference of assistant.referenceSuggestions) {
+        await this.pool.query(
+          `INSERT INTO observation_reference_links (observation_id, source_id, source_chunk_id, citation_label, suggested, accepted)
+           VALUES ($1, $2, $3, $4, true, false) ON CONFLICT DO NOTHING`,
+          [observationId, reference.sourceId, reference.sourceChunkId, reference.citationLabel]
+        );
+      }
+      await this.addObservationAudit(userId, observationId, "ai_processing_result", `Suggestions ready from ${assistant.provider}`);
+    } catch (error) {
+      await this.pool.query("UPDATE field_observations SET ai_suggestion_status = 'failed', ai_error_state = $2, updated_at = now() WHERE id = $1", [observationId, error instanceof Error ? error.message : "Observation suggestion processing failed"]);
+      await this.addObservationAudit(userId, observationId, "ai_processing_failed", "Observation was saved, but suggestions failed");
+    }
+    return this.getObservation(userId, observationId);
+  }
+
+  async linkObservationReference(userId: string, observationId: string, input: ObservationReferenceLinkInput): Promise<ObservationReferenceLink> {
+    const observation = await this.getObservation(userId, observationId);
+    if (!observation) throw new Error("Observation not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    await this.ensureSelectableReviewReference(observation.projectId, source);
+    try {
+      const result = await this.pool.query(
+        "INSERT INTO observation_reference_links (observation_id, source_id, source_chunk_id, citation_label, suggested, accepted) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+        [observationId, source.id, clean(input.sourceChunkId), clean(input.citationLabel), input.suggested, input.accepted]
+      );
+      await this.addObservationAudit(userId, observationId, "reference_link_added", `Linked reference: ${source.title}`);
+      return mapObservationReference(result.rows[0], source);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicateObservationReferenceError();
+      throw error;
+    }
+  }
+
+  async unlinkObservationReference(userId: string, linkId: string): Promise<void> {
+    const current = await this.pool.query("SELECT * FROM observation_reference_links WHERE id = $1", [linkId]);
+    if (!current.rows[0] || !(await this.getObservation(userId, current.rows[0].observation_id))) return;
+    await this.pool.query("DELETE FROM observation_reference_links WHERE id = $1", [linkId]);
+    await this.addObservationAudit(userId, current.rows[0].observation_id, "reference_link_removed", "Removed observation reference link");
+  }
+
+  async linkObservationPlanFinding(userId: string, observationId: string, input: ObservationPlanFindingLinkInput): Promise<ObservationPlanFindingLink> {
+    const observation = await this.getObservation(userId, observationId);
+    if (!observation) throw new Error("Observation not found");
+    const finding = await this.getPlanFindingForProject(userId, input.findingId, observation.projectId);
+    if (!finding) throw new Error("Plan finding not found");
+    try {
+      const result = await this.pool.query(
+        "INSERT INTO observation_plan_finding_links (observation_id, finding_id, suggested, accepted, note) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+        [observationId, finding.id, input.suggested, input.accepted, clean(input.note)]
+      );
+      await this.addObservationAudit(userId, observationId, "plan_finding_link_added", `Linked plan finding: ${finding.title}`);
+      return mapObservationPlanFindingLink(result.rows[0], finding);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicateObservationPlanFindingLinkError();
+      throw error;
+    }
+  }
+
+  async unlinkObservationPlanFinding(userId: string, linkId: string): Promise<void> {
+    const current = await this.pool.query("SELECT * FROM observation_plan_finding_links WHERE id = $1", [linkId]);
+    if (!current.rows[0] || !(await this.getObservation(userId, current.rows[0].observation_id))) return;
+    await this.pool.query("DELETE FROM observation_plan_finding_links WHERE id = $1", [linkId]);
+    await this.addObservationAudit(userId, current.rows[0].observation_id, "plan_finding_link_removed", "Removed plan finding link");
+  }
+
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
     const result = await this.pool.query(
       `SELECT e.*
@@ -1757,6 +2137,74 @@ export class PostgresStore implements AppStore {
       [userId, findingId]
     );
     return result.rows[0] ? mapPlanFinding(result.rows[0]) : null;
+  }
+
+  private async getPlanFindingForProject(userId: string, findingId: string, projectId: string): Promise<PlanFinding | null> {
+    const result = await this.pool.query(
+      `SELECT pf.*
+       FROM plan_findings pf
+       JOIN plan_reviews pr ON pr.id = pf.review_id
+       JOIN safety_plans sp ON sp.id = pr.plan_id
+       JOIN projects p ON p.id = sp.project_id
+       WHERE p.owner_user_id = $1 AND p.id = $2 AND pf.id = $3`,
+      [userId, projectId, findingId]
+    );
+    return result.rows[0] ? mapPlanFinding(result.rows[0]) : null;
+  }
+
+  private async mapObservationWithContext(row: Record<string, unknown>): Promise<FieldObservation> {
+    const engagement = row.engagement_id ? await this.getEngagementById(String(row.engagement_id)) : undefined;
+    return mapObservation(row, engagement ?? undefined);
+  }
+
+  private async buildObservationDetail(userId: string, row: Record<string, unknown>): Promise<ObservationDetail> {
+    const observation = await this.mapObservationWithContext(row);
+    const photos = await this.pool.query("SELECT * FROM observation_photos WHERE observation_id = $1 ORDER BY created_at", [observation.id]);
+    const references = await this.pool.query("SELECT * FROM observation_reference_links WHERE observation_id = $1 ORDER BY created_at", [observation.id]);
+    const findingLinks = await this.pool.query("SELECT * FROM observation_plan_finding_links WHERE observation_id = $1 ORDER BY created_at", [observation.id]);
+    const audit = await this.pool.query("SELECT * FROM observation_audit_events WHERE observation_id = $1 ORDER BY created_at", [observation.id]);
+    return {
+      ...observation,
+      photos: await Promise.all(photos.rows.map(async (photo) => mapObservationPhoto(photo, (await this.getSource(userId, photo.source_id)) ?? undefined))),
+      referenceLinks: await Promise.all(references.rows.map(async (link) => mapObservationReference(link, (await this.getSource(userId, link.source_id)) ?? undefined))),
+      planFindingLinks: await Promise.all(findingLinks.rows.map(async (link) => mapObservationPlanFindingLink(link, (await this.getFindingForUser(userId, link.finding_id)) ?? undefined))),
+      auditEvents: audit.rows.map(mapObservationAudit)
+    };
+  }
+
+  private async refreshObservationRecurrence(observationId: string): Promise<void> {
+    const current = await this.pool.query("SELECT * FROM field_observations WHERE id = $1", [observationId]);
+    const observation = current.rows[0];
+    if (!observation || !observation.category) return;
+    const result = await this.pool.query(
+      `SELECT count(*)::int AS count
+       FROM field_observations
+       WHERE id <> $1 AND project_id = $2 AND category = $3 AND ($4::uuid IS NULL OR engagement_id = $4)`,
+      [observationId, observation.project_id, observation.category, observation.engagement_id]
+    );
+    const recurrenceCount = Number(result.rows[0]?.count ?? 0);
+    await this.pool.query(
+      "UPDATE field_observations SET recurrence_count = $2, recurrence_summary = $3 WHERE id = $1",
+      [
+        observationId,
+        recurrenceCount,
+        recurrenceCount > 0 ? `${recurrenceCount} prior observation${recurrenceCount === 1 ? "" : "s"} share this project/category context.` : null
+      ]
+    );
+  }
+
+  private async getEngagementById(engagementId: string): Promise<ProjectContractorEngagement | null> {
+    const result = await this.pool.query("SELECT * FROM project_contractor_engagements WHERE id = $1", [engagementId]);
+    if (!result.rows[0]) return null;
+    const contractor = await this.pool.query("SELECT * FROM contractors WHERE id = $1", [result.rows[0].contractor_id]);
+    return mapEngagement(result.rows[0], contractor.rows[0] ? mapContractor(contractor.rows[0]) : undefined);
+  }
+
+  private async addObservationAudit(userId: string, observationId: string, eventType: string, message: string): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO observation_audit_events (observation_id, event_type, message, actor_user_id) VALUES ($1, $2, $3, $4)",
+      [observationId, eventType, message, userId]
+    );
   }
 
   private async insertPlanRevision(
