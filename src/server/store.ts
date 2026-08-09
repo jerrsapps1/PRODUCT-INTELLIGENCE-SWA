@@ -5,6 +5,14 @@ import type {
   Project,
   ProjectContractorEngagement,
   ProjectCreateInput,
+  ProjectSourceActivationInput,
+  ProjectSourceInput,
+  ProjectSourceLink,
+  SourceChunk,
+  SourceDetail,
+  SourceRecord,
+  SourceSearchInput,
+  SourceUpdateInput,
   UserSummary
 } from "../shared/contracts";
 
@@ -36,10 +44,39 @@ export interface AppStore {
     projectId: string,
     engagementId: string
   ): Promise<ProjectContractorEngagement | null>;
+  listSources(userId: string, filters: SourceSearchInput): Promise<SourceRecord[]>;
+  createSource(
+    userId: string,
+    input: Omit<SourceRecord, "ownerUserId" | "createdAt" | "updatedAt" | "uploadedAt">
+  ): Promise<SourceRecord>;
+  updateSourceProcessing(
+    userId: string,
+    sourceId: string,
+    input: Pick<SourceRecord, "processingStatus" | "extractionStatus" | "extractionVersion" | "failureReason" | "metadata">
+  ): Promise<SourceRecord>;
+  updateSource(userId: string, sourceId: string, input: SourceUpdateInput): Promise<SourceRecord | null>;
+  getSource(userId: string, sourceId: string): Promise<SourceDetail | null>;
+  addSourceChunks(userId: string, sourceId: string, chunks: SourceChunk[]): Promise<void>;
+  associateSourceToProject(userId: string, projectId: string, input: ProjectSourceInput): Promise<ProjectSourceLink>;
+  listProjectSources(userId: string, projectId: string): Promise<ProjectSourceLink[]>;
+  updateProjectSourceActivation(
+    userId: string,
+    projectId: string,
+    sourceId: string,
+    input: ProjectSourceActivationInput
+  ): Promise<ProjectSourceLink | null>;
+  removeSourceFromProject(userId: string, projectId: string, sourceId: string): Promise<void>;
+  searchSourceChunks(userId: string, filters: SourceSearchInput): Promise<SourceChunk[]>;
 }
 
 export class DuplicateEngagementError extends Error {
   constructor() {
     super("Contractor is already engaged on this project");
+  }
+}
+
+export class DuplicateProjectSourceError extends Error {
+  constructor() {
+    super("Source is already associated with this project");
   }
 }

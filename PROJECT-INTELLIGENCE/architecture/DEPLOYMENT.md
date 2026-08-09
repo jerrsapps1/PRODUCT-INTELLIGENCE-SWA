@@ -13,7 +13,7 @@ Status: Phase 1 foundation documented; hosted infrastructure pending deployment 
 - Frontend: hosted static React/Vite build from `dist/client`.
 - Backend/API: Render-hosted Node process from `dist/server/index.js`.
 - Structured data: PostgreSQL, provided through `DATABASE_URL`.
-- Future file/object data: external object storage, not PostgreSQL binary columns.
+- File/object data: local object storage in development through `LOCAL_STORAGE_DIR`; managed external object storage required for production. PostgreSQL stores storage references, not large binary files.
 
 ## PostgreSQL Backup and Recovery
 
@@ -40,4 +40,4 @@ Required production configuration when file workflows are introduced:
 - Backup or cross-region replication policy if required by the selected storage provider and risk tolerance.
 - Recovery procedure linking restored database records to restored object keys.
 
-Current Phase 1 status: no upload workflow exists, so object-storage implementation is not active. The requirement is recorded here for deployment and Phase 2+ file architecture.
+Current Phase 2 status: local object storage is implemented for development. Production must configure managed object storage and backup/durability policies before real project files are stored.

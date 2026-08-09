@@ -5,6 +5,7 @@ export interface ServerConfig {
   bootstrapPassword: string;
   bootstrapDisplayName: string;
   sessionSecret: string;
+  localStorageDir: string;
   nodeEnv: string;
 }
 
@@ -21,6 +22,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     bootstrapPassword,
     bootstrapDisplayName: env.BOOTSTRAP_DISPLAY_NAME ?? "Safety Professional",
     sessionSecret: env.SESSION_SECRET ?? "development-session-secret",
+    localStorageDir: env.LOCAL_STORAGE_DIR ?? ".data/source-objects",
     nodeEnv: env.NODE_ENV ?? "development"
   };
 }

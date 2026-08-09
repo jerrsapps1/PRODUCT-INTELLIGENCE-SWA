@@ -128,6 +128,111 @@ describe("Phase 1 API", () => {
     expect(invalidEngagement.status).toBe(400);
   });
 
+  it("uploads, extracts, searches, and retrieves original text sources", async () => {
+    const cookie = await login();
+    const unauthenticated = await fetch(`${baseUrl}/api/sources/upload`, { method: "POST" });
+    expect(unauthenticated.status).toBe(401);
+
+    const upload = await uploadMultipart(cookie, {
+      title: "OSHA notes",
+      scope: "global",
+      authorityClassification: "general_reference",
+      userConfirmedClassification: "true"
+    }, { filename: "osha-notes.txt", mimeType: "text/plain", content: "fall protection guardrail citation text" });
+    expect(upload.status).toBe(201);
+    const uploaded = await json<{ sources: Array<{ id: string; processingStatus: string; extractionStatus: string }> }>(upload);
+    expect(uploaded.sources[0]).toEqual(expect.objectContaining({ processingStatus: "ready", extractionStatus: "ready" }));
+
+    const search = await json<{ chunks: Array<{ sourceId: string; text: string; citation: Record<string, unknown> }> }>(
+      await fetch(`${baseUrl}/api/source-chunks?q=guardrail`, { headers: { cookie } })
+    );
+    expect(search.chunks[0]).toEqual(expect.objectContaining({ sourceId: uploaded.sources[0].id }));
+    expect(search.chunks[0].citation).toEqual(expect.objectContaining({ chunk: 1 }));
+
+    const original = await fetch(`${baseUrl}/api/sources/${uploaded.sources[0].id}/original`, { headers: { cookie } });
+    expect(original.status).toBe(200);
+    expect(await original.text()).toContain("guardrail citation");
+  });
+
+  it("rejects unsupported files and preserves originals when extraction fails", async () => {
+    const cookie = await login();
+    const rejected = await uploadMultipart(cookie, {
+      title: "Executable",
+      scope: "global",
+      authorityClassification: "general_reference"
+    }, { filename: "tool.exe", mimeType: "application/x-msdownload", content: "nope" });
+    expect(rejected.status).toBe(400);
+
+    const uploaded = await uploadMultipart(cookie, {
+      title: "Broken DOCX",
+      scope: "global",
+      authorityClassification: "working_document"
+    }, {
+      filename: "broken.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      content: "not a valid office zip"
+    });
+    expect(uploaded.status).toBe(201);
+    const body = await json<{ sources: Array<{ id: string; processingStatus: string; failureReason: string | null }> }>(uploaded);
+    expect(body.sources[0].processingStatus).toBe("failed");
+    expect(body.sources[0].failureReason).toBeTruthy();
+    const original = await fetch(`${baseUrl}/api/sources/${body.sources[0].id}/original`, { headers: { cookie } });
+    expect(original.status).toBe(200);
+    expect(await original.text()).toContain("not a valid office zip");
+  });
+
+  it("associates global sources to projects and controls activation without duplication", async () => {
+    const cookie = await login();
+    const project = await createProject(cookie, "Source Project");
+    const source = await uploadTextSource(cookie, "EM 385-1-1", "global reference text");
+
+    const associate = await fetch(`${baseUrl}/api/projects/${project.id}/sources`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ sourceId: source.id, activationStatus: "associated" })
+    });
+    expect(associate.status).toBe(201);
+
+    const duplicate = await fetch(`${baseUrl}/api/projects/${project.id}/sources`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ sourceId: source.id, activationStatus: "active" })
+    });
+    expect(duplicate.status).toBe(409);
+
+    const activate = await fetch(`${baseUrl}/api/projects/${project.id}/sources/${source.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ activationStatus: "active" })
+    });
+    expect(activate.status).toBe(200);
+
+    const projectSources = await json<{ projectSources: Array<{ sourceId: string; activationStatus: string }> }>(
+      await fetch(`${baseUrl}/api/projects/${project.id}/sources`, { headers: { cookie } })
+    );
+    expect(projectSources.projectSources).toContainEqual(expect.objectContaining({ sourceId: source.id, activationStatus: "active" }));
+
+    const removed = await fetch(`${baseUrl}/api/projects/${project.id}/sources/${source.id}`, { method: "DELETE", headers: { cookie } });
+    expect(removed.status).toBe(204);
+    const stillExists = await fetch(`${baseUrl}/api/sources/${source.id}`, { headers: { cookie } });
+    expect(stillExists.status).toBe(200);
+  });
+
+  it("rejects unsafe URL sources", async () => {
+    const cookie = await login();
+    const response = await fetch(`${baseUrl}/api/sources/url`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        title: "Local URL",
+        scope: "global",
+        authorityClassification: "general_reference",
+        url: "http://127.0.0.1/internal"
+      })
+    });
+    expect(response.status).toBe(400);
+  });
+
   async function login(): Promise<string> {
     const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",
@@ -160,5 +265,37 @@ describe("Phase 1 API", () => {
     expect(response.status).toBe(201);
     const body = await json<{ contractor: { id: string } }>(response);
     return body.contractor;
+  }
+
+  async function uploadTextSource(cookie: string, title: string, text: string): Promise<{ id: string }> {
+    const response = await uploadMultipart(cookie, {
+      title,
+      scope: "global",
+      authorityClassification: "general_reference"
+    }, { filename: `${title}.txt`, mimeType: "text/plain", content: text });
+    expect(response.status).toBe(201);
+    const body = await json<{ sources: Array<{ id: string }> }>(response);
+    return body.sources[0];
+  }
+
+  async function uploadMultipart(
+    cookie: string,
+    fields: Record<string, string>,
+    file: { filename: string; mimeType: string; content: string }
+  ): Promise<Response> {
+    const boundary = `----phase2-${Math.random().toString(16).slice(2)}`;
+    const chunks: string[] = [];
+    for (const [name, value] of Object.entries(fields)) {
+      chunks.push(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+    }
+    chunks.push(
+      `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.filename}"\r\nContent-Type: ${file.mimeType}\r\n\r\n${file.content}\r\n`
+    );
+    chunks.push(`--${boundary}--\r\n`);
+    return fetch(`${baseUrl}/api/sources/upload`, {
+      method: "POST",
+      headers: { cookie, "content-type": `multipart/form-data; boundary=${boundary}` },
+      body: chunks.join("")
+    });
   }
 });

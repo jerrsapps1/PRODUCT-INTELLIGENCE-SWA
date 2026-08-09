@@ -1,6 +1,7 @@
 import { createApp } from "./app";
 import { PostgresStore } from "./db/postgresStore";
 import { readConfig } from "./env";
+import { LocalObjectStorage } from "./storage";
 
 const config = readConfig();
 
@@ -10,6 +11,7 @@ if (!config.databaseUrl) {
 
 const server = await createApp({
   store: new PostgresStore(config.databaseUrl),
+  storage: new LocalObjectStorage(config.localStorageDir),
   bootstrapEmail: config.bootstrapEmail,
   bootstrapPassword: config.bootstrapPassword,
   bootstrapDisplayName: config.bootstrapDisplayName,
