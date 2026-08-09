@@ -1,7 +1,14 @@
 import pg from "pg";
 import type {
+  CompetentPersonCreateInput,
+  CompetentPersonEvidence,
   Contractor,
   ContractorCreateInput,
+  ContractorReadinessDetail,
+  ContractorReadinessSummary,
+  ContractorRequirementApplyInput,
+  ContractorRequirementStatus,
+  ContractorRequirementUpdateInput,
   EngagementCreateInput,
   Project,
   ProjectContractorEngagement,
@@ -9,13 +16,30 @@ import type {
   ProjectSourceActivationInput,
   ProjectSourceInput,
   ProjectSourceLink,
+  ReadinessAuditEvent,
+  ReadinessEvidence,
+  ReadinessEvidenceCreateInput,
+  ReadinessEvidenceReviewInput,
+  ReadinessRequirement,
+  ReadinessRequirementCreateInput,
+  ReadinessRequirementUpdateInput,
+  ReadinessStatus,
+  SafetyMetric,
+  SafetyMetricCreateInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
   SourceSearchInput,
   SourceUpdateInput
 } from "../../shared/contracts";
-import { DuplicateEngagementError, DuplicateProjectSourceError, type AppStore, type StoredUser } from "../store";
+import {
+  DuplicateEngagementError,
+  DuplicateEvidenceAssociationError,
+  DuplicateProjectSourceError,
+  DuplicateRequirementApplicationError,
+  type AppStore,
+  type StoredUser
+} from "../store";
 
 const { Pool } = pg;
 
@@ -131,6 +155,103 @@ CREATE INDEX IF NOT EXISTS idx_sources_project_id ON sources(project_id);
 CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
 CREATE INDEX IF NOT EXISTS idx_source_chunks_text ON source_chunks USING gin (to_tsvector('english', text));
 CREATE INDEX IF NOT EXISTS idx_project_sources_project_id ON project_sources(project_id);
+
+CREATE TABLE IF NOT EXISTS readiness_requirements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  description text,
+  category text NOT NULL DEFAULT 'Other',
+  source_id uuid REFERENCES sources(id) ON DELETE SET NULL,
+  source_chunk_id uuid REFERENCES source_chunks(id) ON DELETE SET NULL,
+  citation_label text,
+  required boolean NOT NULL DEFAULT true,
+  blocking boolean NOT NULL DEFAULT true,
+  due_date date,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS contractor_requirement_statuses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  requirement_id uuid NOT NULL REFERENCES readiness_requirements(id) ON DELETE CASCADE,
+  engagement_id uuid NOT NULL REFERENCES project_contractor_engagements(id) ON DELETE CASCADE,
+  status text NOT NULL CHECK (status IN ('required','requested','received','needs_review','accepted','rejected','expired','replacement_requested','not_applicable')),
+  reviewer_notes text,
+  planned_mobilization_date date,
+  reviewed_at timestamptz,
+  reviewed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (requirement_id, engagement_id)
+);
+
+CREATE TABLE IF NOT EXISTS readiness_evidence (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  requirement_status_id uuid NOT NULL REFERENCES contractor_requirement_statuses(id) ON DELETE CASCADE,
+  source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  source_chunk_id uuid REFERENCES source_chunks(id) ON DELETE SET NULL,
+  evidence_role text NOT NULL DEFAULT 'supporting_evidence',
+  review_status text NOT NULL CHECK (review_status IN ('required','requested','received','needs_review','accepted','rejected','expired','replacement_requested','not_applicable')),
+  extracted_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  reviewer_confirmed_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  reviewer_notes text,
+  reviewed_at timestamptz,
+  reviewed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (requirement_status_id, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS safety_metrics (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  contractor_id uuid NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  engagement_id uuid REFERENCES project_contractor_engagements(id) ON DELETE CASCADE,
+  metric_type text NOT NULL CHECK (metric_type IN ('emr','trir','dart','other')),
+  metric_name text,
+  period_year integer NOT NULL,
+  value numeric NOT NULL CHECK (value >= 0),
+  source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  evidence_id uuid REFERENCES readiness_evidence(id) ON DELETE SET NULL,
+  review_status text NOT NULL CHECK (review_status IN ('required','requested','received','needs_review','accepted','rejected','expired','replacement_requested','not_applicable')),
+  reviewer_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS competent_person_evidence (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id uuid NOT NULL REFERENCES project_contractor_engagements(id) ON DELETE CASCADE,
+  contractor_id uuid NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  person_name text NOT NULL,
+  designation text NOT NULL,
+  authorization_source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  training_source_id uuid REFERENCES sources(id) ON DELETE SET NULL,
+  effective_date date,
+  expiration_date date,
+  review_status text NOT NULL CHECK (review_status IN ('required','requested','received','needs_review','accepted','rejected','expired','replacement_requested','not_applicable')),
+  reviewer_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS readiness_audit_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  engagement_id uuid NOT NULL REFERENCES project_contractor_engagements(id) ON DELETE CASCADE,
+  requirement_status_id uuid REFERENCES contractor_requirement_statuses(id) ON DELETE SET NULL,
+  evidence_id uuid REFERENCES readiness_evidence(id) ON DELETE SET NULL,
+  event_type text NOT NULL,
+  message text NOT NULL,
+  actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_readiness_requirements_project_id ON readiness_requirements(project_id);
+CREATE INDEX IF NOT EXISTS idx_requirement_statuses_engagement_id ON contractor_requirement_statuses(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_readiness_evidence_status_id ON readiness_evidence(requirement_status_id);
+CREATE INDEX IF NOT EXISTS idx_safety_metrics_engagement_id ON safety_metrics(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_competent_person_evidence_engagement_id ON competent_person_evidence(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_readiness_audit_engagement_id ON readiness_audit_events(engagement_id);
 `;
 
 function clean(value: string | undefined): string | null {
@@ -242,6 +363,108 @@ function mapProjectSource(row: Record<string, unknown>, source?: SourceRecord): 
     createdAt: new Date(row.created_at as string).toISOString(),
     updatedAt: new Date(row.updated_at as string).toISOString(),
     source
+  };
+}
+
+function mapReadinessRequirement(row: Record<string, unknown>): ReadinessRequirement {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    title: String(row.title),
+    description: row.description ? String(row.description) : null,
+    category: String(row.category),
+    sourceId: row.source_id ? String(row.source_id) : null,
+    sourceChunkId: row.source_chunk_id ? String(row.source_chunk_id) : null,
+    citationLabel: row.citation_label ? String(row.citation_label) : null,
+    required: Boolean(row.required),
+    blocking: Boolean(row.blocking),
+    dueDate: toIsoDate(row.due_date as Date | string | null),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapRequirementStatus(row: Record<string, unknown>, requirement?: ReadinessRequirement): ContractorRequirementStatus {
+  return {
+    id: String(row.id),
+    requirementId: String(row.requirement_id),
+    engagementId: String(row.engagement_id),
+    status: row.status as ReadinessStatus,
+    reviewerNotes: row.reviewer_notes ? String(row.reviewer_notes) : null,
+    plannedMobilizationDate: toIsoDate(row.planned_mobilization_date as Date | string | null),
+    reviewedAt: row.reviewed_at ? new Date(row.reviewed_at as string).toISOString() : null,
+    reviewedByUserId: row.reviewed_by_user_id ? String(row.reviewed_by_user_id) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    requirement
+  };
+}
+
+function mapReadinessEvidence(row: Record<string, unknown>, source?: SourceRecord): ReadinessEvidence {
+  return {
+    id: String(row.id),
+    requirementStatusId: String(row.requirement_status_id),
+    sourceId: String(row.source_id),
+    sourceChunkId: row.source_chunk_id ? String(row.source_chunk_id) : null,
+    evidenceRole: String(row.evidence_role),
+    reviewStatus: row.review_status as ReadinessStatus,
+    extractedMetadata: (row.extracted_metadata as Record<string, unknown>) ?? {},
+    reviewerConfirmedMetadata: (row.reviewer_confirmed_metadata as Record<string, unknown>) ?? {},
+    reviewerNotes: row.reviewer_notes ? String(row.reviewer_notes) : null,
+    reviewedAt: row.reviewed_at ? new Date(row.reviewed_at as string).toISOString() : null,
+    reviewedByUserId: row.reviewed_by_user_id ? String(row.reviewed_by_user_id) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    source
+  };
+}
+
+function mapSafetyMetric(row: Record<string, unknown>): SafetyMetric {
+  return {
+    id: String(row.id),
+    contractorId: String(row.contractor_id),
+    engagementId: row.engagement_id ? String(row.engagement_id) : null,
+    metricType: row.metric_type as SafetyMetric["metricType"],
+    metricName: row.metric_name ? String(row.metric_name) : null,
+    periodYear: Number(row.period_year),
+    value: Number(row.value),
+    sourceId: String(row.source_id),
+    evidenceId: row.evidence_id ? String(row.evidence_id) : null,
+    reviewStatus: row.review_status as ReadinessStatus,
+    reviewerNotes: row.reviewer_notes ? String(row.reviewer_notes) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapCompetentPerson(row: Record<string, unknown>): CompetentPersonEvidence {
+  return {
+    id: String(row.id),
+    engagementId: String(row.engagement_id),
+    contractorId: String(row.contractor_id),
+    personName: String(row.person_name),
+    designation: String(row.designation),
+    authorizationSourceId: String(row.authorization_source_id),
+    trainingSourceId: row.training_source_id ? String(row.training_source_id) : null,
+    effectiveDate: toIsoDate(row.effective_date as Date | string | null),
+    expirationDate: toIsoDate(row.expiration_date as Date | string | null),
+    reviewStatus: row.review_status as ReadinessStatus,
+    reviewerNotes: row.reviewer_notes ? String(row.reviewer_notes) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapAuditEvent(row: Record<string, unknown>): ReadinessAuditEvent {
+  return {
+    id: String(row.id),
+    engagementId: String(row.engagement_id),
+    requirementStatusId: row.requirement_status_id ? String(row.requirement_status_id) : null,
+    evidenceId: row.evidence_id ? String(row.evidence_id) : null,
+    eventType: String(row.event_type),
+    message: String(row.message),
+    actorUserId: String(row.actor_user_id),
+    createdAt: new Date(row.created_at as string).toISOString()
   };
 }
 
@@ -653,5 +876,422 @@ export class PostgresStore implements AppStore {
     }
     const result = await this.pool.query(`SELECT * FROM source_chunks WHERE ${clauses.join(" AND ")} ORDER BY source_id, chunk_index LIMIT 50`, values);
     return result.rows.map(mapChunk);
+  }
+
+  async listReadinessRequirements(userId: string, projectId: string): Promise<ReadinessRequirement[]> {
+    if (!(await this.getProject(userId, projectId))) return [];
+    const result = await this.pool.query("SELECT * FROM readiness_requirements WHERE project_id = $1 ORDER BY created_at DESC", [projectId]);
+    return result.rows.map(mapReadinessRequirement);
+  }
+
+  async createReadinessRequirement(userId: string, projectId: string, input: ReadinessRequirementCreateInput): Promise<ReadinessRequirement> {
+    if (!(await this.getProject(userId, projectId))) throw new Error("Project not found");
+    if (input.sourceId && !(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const result = await this.pool.query(
+      `INSERT INTO readiness_requirements
+       (project_id, title, description, category, source_id, source_chunk_id, citation_label, required, blocking, due_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [
+        projectId,
+        input.title.trim(),
+        clean(input.description),
+        input.category?.trim() || "Other",
+        clean(input.sourceId),
+        clean(input.sourceChunkId),
+        clean(input.citationLabel),
+        input.required,
+        input.blocking,
+        clean(input.dueDate)
+      ]
+    );
+    return mapReadinessRequirement(result.rows[0]);
+  }
+
+  async updateReadinessRequirement(
+    userId: string,
+    projectId: string,
+    requirementId: string,
+    input: ReadinessRequirementUpdateInput
+  ): Promise<ReadinessRequirement | null> {
+    const current = (await this.listReadinessRequirements(userId, projectId)).find((requirement) => requirement.id === requirementId);
+    if (!current) return null;
+    if (input.sourceId && !(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const result = await this.pool.query(
+      `UPDATE readiness_requirements
+       SET title = $3, description = $4, category = $5, source_id = $6, source_chunk_id = $7,
+           citation_label = $8, required = $9, blocking = $10, due_date = $11, updated_at = now()
+       WHERE project_id = $1 AND id = $2
+       RETURNING *`,
+      [
+        projectId,
+        requirementId,
+        input.title ?? current.title,
+        input.description === undefined ? current.description : clean(input.description),
+        input.category ?? current.category,
+        input.sourceId === undefined ? current.sourceId : clean(input.sourceId),
+        input.sourceChunkId === undefined ? current.sourceChunkId : clean(input.sourceChunkId),
+        input.citationLabel === undefined ? current.citationLabel : clean(input.citationLabel),
+        input.required ?? current.required,
+        input.blocking ?? current.blocking,
+        input.dueDate === undefined ? current.dueDate : clean(input.dueDate)
+      ]
+    );
+    return result.rows[0] ? mapReadinessRequirement(result.rows[0]) : null;
+  }
+
+  async applyRequirementToEngagement(
+    userId: string,
+    engagementId: string,
+    input: ContractorRequirementApplyInput
+  ): Promise<ContractorRequirementStatus> {
+    const engagement = await this.getEngagementForUser(userId, engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    const requirement = (await this.listReadinessRequirements(userId, engagement.projectId)).find((item) => item.id === input.requirementId);
+    if (!requirement) throw new Error("Readiness requirement not found");
+    try {
+      const result = await this.pool.query(
+        `INSERT INTO contractor_requirement_statuses (requirement_id, engagement_id, status)
+         VALUES ($1, $2, $3)
+         RETURNING *`,
+        [input.requirementId, engagementId, requirement.required ? "required" : "not_applicable"]
+      );
+      const status = mapRequirementStatus(result.rows[0], requirement);
+      await this.addAudit(userId, engagementId, status.id, null, "requirement_applied", `Applied requirement: ${requirement.title}`);
+      return status;
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicateRequirementApplicationError();
+      throw error;
+    }
+  }
+
+  async listContractorRequirementStatuses(userId: string, engagementId: string): Promise<ContractorRequirementStatus[]> {
+    const engagement = await this.getEngagementForUser(userId, engagementId);
+    if (!engagement) return [];
+    const result = await this.pool.query(
+      `SELECT crs.*, rr.id AS rr_id, rr.project_id, rr.title, rr.description, rr.category, rr.source_id,
+              rr.source_chunk_id, rr.citation_label, rr.required, rr.blocking, rr.due_date,
+              rr.created_at AS rr_created_at, rr.updated_at AS rr_updated_at
+       FROM contractor_requirement_statuses crs
+       JOIN readiness_requirements rr ON rr.id = crs.requirement_id
+       WHERE crs.engagement_id = $1
+       ORDER BY rr.created_at DESC`,
+      [engagementId]
+    );
+    return result.rows.map((row) => mapRequirementStatus(row, mapReadinessRequirement({
+      id: row.rr_id,
+      project_id: row.project_id,
+      title: row.title,
+      description: row.description,
+      category: row.category,
+      source_id: row.source_id,
+      source_chunk_id: row.source_chunk_id,
+      citation_label: row.citation_label,
+      required: row.required,
+      blocking: row.blocking,
+      due_date: row.due_date,
+      created_at: row.rr_created_at,
+      updated_at: row.rr_updated_at
+    })));
+  }
+
+  async updateContractorRequirementStatus(
+    userId: string,
+    statusId: string,
+    input: ContractorRequirementUpdateInput
+  ): Promise<ContractorRequirementStatus | null> {
+    const current = await this.getRequirementStatusForUser(userId, statusId);
+    if (!current) return null;
+    const reviewed = input.status && ["accepted", "rejected", "expired", "not_applicable", "replacement_requested"].includes(input.status);
+    const result = await this.pool.query(
+      `UPDATE contractor_requirement_statuses
+       SET status = $2, reviewer_notes = $3, planned_mobilization_date = $4,
+           reviewed_at = CASE WHEN $5::boolean THEN now() ELSE reviewed_at END,
+           reviewed_by_user_id = CASE WHEN $5::boolean THEN $6 ELSE reviewed_by_user_id END,
+           updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        statusId,
+        input.status ?? current.status,
+        input.reviewerNotes === undefined ? current.reviewerNotes : clean(input.reviewerNotes),
+        input.plannedMobilizationDate === undefined ? current.plannedMobilizationDate : clean(input.plannedMobilizationDate),
+        Boolean(reviewed),
+        userId
+      ]
+    );
+    const updated = mapRequirementStatus(result.rows[0], current.requirement);
+    await this.addAudit(userId, updated.engagementId, statusId, null, "status_changed", `Requirement status changed to ${updated.status}`);
+    return updated;
+  }
+
+  async attachReadinessEvidence(userId: string, input: ReadinessEvidenceCreateInput): Promise<ReadinessEvidence> {
+    const status = await this.getRequirementStatusForUser(userId, input.requirementStatusId);
+    if (!status) throw new Error("Requirement status not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    try {
+      const result = await this.pool.query(
+        `INSERT INTO readiness_evidence
+         (requirement_status_id, source_id, source_chunk_id, evidence_role, review_status, extracted_metadata, reviewer_notes)
+         VALUES ($1, $2, $3, $4, 'needs_review', $5, $6)
+         RETURNING *`,
+        [input.requirementStatusId, input.sourceId, clean(input.sourceChunkId), input.evidenceRole, input.extractedMetadata, clean(input.reviewerNotes)]
+      );
+      await this.updateContractorRequirementStatus(userId, status.id, { status: "received" });
+      await this.addAudit(userId, status.engagementId, status.id, result.rows[0].id, "evidence_received", "Evidence attached; review still required");
+      return mapReadinessEvidence(result.rows[0], source);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicateEvidenceAssociationError();
+      throw error;
+    }
+  }
+
+  async reviewReadinessEvidence(userId: string, evidenceId: string, input: ReadinessEvidenceReviewInput): Promise<ReadinessEvidence | null> {
+    const current = await this.getReadinessEvidenceForUser(userId, evidenceId);
+    if (!current) return null;
+    const result = await this.pool.query(
+      `UPDATE readiness_evidence
+       SET review_status = $2, reviewer_notes = $3, reviewed_at = now(), reviewed_by_user_id = $4, updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [evidenceId, input.reviewStatus, input.reviewerNotes === undefined ? current.reviewerNotes : clean(input.reviewerNotes), userId]
+    );
+    const status = await this.getRequirementStatusForUser(userId, current.requirementStatusId);
+    if (status) {
+      await this.updateContractorRequirementStatus(userId, status.id, { status: input.reviewStatus });
+      await this.addAudit(userId, status.engagementId, status.id, evidenceId, "evidence_reviewed", `Evidence marked ${input.reviewStatus}`);
+    }
+    const source = await this.getSource(userId, current.sourceId);
+    return mapReadinessEvidence(result.rows[0], source ?? undefined);
+  }
+
+  async createSafetyMetric(userId: string, input: SafetyMetricCreateInput): Promise<SafetyMetric> {
+    const engagement = await this.getEngagementForUser(userId, input.engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    if (!(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const result = await this.pool.query(
+      `INSERT INTO safety_metrics
+       (contractor_id, engagement_id, metric_type, metric_name, period_year, value, source_id, evidence_id, review_status, reviewer_notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [
+        engagement.contractorId,
+        engagement.id,
+        input.metricType,
+        clean(input.metricName),
+        input.periodYear,
+        input.value,
+        input.sourceId,
+        clean(input.evidenceId),
+        input.reviewStatus,
+        clean(input.reviewerNotes)
+      ]
+    );
+    const metric = mapSafetyMetric(result.rows[0]);
+    await this.addAudit(userId, engagement.id, null, metric.evidenceId, "metric_recorded", `Recorded ${metric.metricType.toUpperCase()} ${metric.periodYear}`);
+    return metric;
+  }
+
+  async createCompetentPersonEvidence(userId: string, input: CompetentPersonCreateInput): Promise<CompetentPersonEvidence> {
+    const engagement = await this.getEngagementForUser(userId, input.engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    if (!(await this.getSource(userId, input.authorizationSourceId))) throw new Error("Source not found");
+    if (input.trainingSourceId && !(await this.getSource(userId, input.trainingSourceId))) throw new Error("Source not found");
+    const result = await this.pool.query(
+      `INSERT INTO competent_person_evidence
+       (engagement_id, contractor_id, person_name, designation, authorization_source_id, training_source_id,
+        effective_date, expiration_date, review_status, reviewer_notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [
+        engagement.id,
+        engagement.contractorId,
+        input.personName.trim(),
+        input.designation.trim(),
+        input.authorizationSourceId,
+        clean(input.trainingSourceId),
+        clean(input.effectiveDate),
+        clean(input.expirationDate),
+        input.reviewStatus,
+        clean(input.reviewerNotes)
+      ]
+    );
+    const record = mapCompetentPerson(result.rows[0]);
+    await this.addAudit(userId, engagement.id, null, null, "competent_person_recorded", `${record.personName} - ${record.designation}`);
+    return record;
+  }
+
+  async getContractorReadiness(
+    userId: string,
+    engagementId: string,
+    filters: { status?: string; category?: string } = {}
+  ): Promise<ContractorReadinessDetail | null> {
+    const engagement = await this.getEngagementForUser(userId, engagementId);
+    if (!engagement) return null;
+    const allRequirements = await this.listContractorRequirementStatuses(userId, engagementId);
+    let requirements = allRequirements;
+    if (filters.status) requirements = requirements.filter((status) => status.status === filters.status);
+    if (filters.category) requirements = requirements.filter((status) => status.requirement?.category === filters.category);
+    const statusIds = requirements.map((status) => status.id);
+    const evidence = statusIds.length
+      ? (await this.pool.query(
+          `SELECT re.*, s.id AS s_id, s.owner_user_id, s.title, s.original_filename, s.mime_type, s.source_type, s.scope,
+                  s.project_id, s.authority_classification, s.user_confirmed_classification, s.ai_suggested_classification,
+                  s.storage_key, s.original_url, s.size_bytes, s.processing_status, s.extraction_status, s.extraction_version,
+                  s.failure_reason, s.metadata, s.uploaded_at, s.created_at AS s_created_at, s.updated_at AS s_updated_at
+           FROM readiness_evidence re
+           JOIN sources s ON s.id = re.source_id
+           WHERE re.requirement_status_id = ANY($1::uuid[])
+           ORDER BY re.created_at DESC`,
+          [statusIds]
+        )).rows.map((row) => mapReadinessEvidence(row, mapSource({
+          id: row.s_id,
+          owner_user_id: row.owner_user_id,
+          title: row.title,
+          original_filename: row.original_filename,
+          mime_type: row.mime_type,
+          source_type: row.source_type,
+          scope: row.scope,
+          project_id: row.project_id,
+          authority_classification: row.authority_classification,
+          user_confirmed_classification: row.user_confirmed_classification,
+          ai_suggested_classification: row.ai_suggested_classification,
+          storage_key: row.storage_key,
+          original_url: row.original_url,
+          size_bytes: row.size_bytes,
+          processing_status: row.processing_status,
+          extraction_status: row.extraction_status,
+          extraction_version: row.extraction_version,
+          failure_reason: row.failure_reason,
+          metadata: row.metadata,
+          uploaded_at: row.uploaded_at,
+          created_at: row.s_created_at,
+          updated_at: row.s_updated_at
+        })))
+      : [];
+    const metrics = (await this.pool.query("SELECT * FROM safety_metrics WHERE engagement_id = $1 ORDER BY created_at DESC", [engagementId])).rows.map(mapSafetyMetric);
+    const competentPersons = (await this.pool.query("SELECT * FROM competent_person_evidence WHERE engagement_id = $1 ORDER BY created_at DESC", [engagementId])).rows.map(mapCompetentPerson);
+    const auditEvents = (await this.pool.query("SELECT * FROM readiness_audit_events WHERE engagement_id = $1 ORDER BY created_at DESC LIMIT 100", [engagementId])).rows.map(mapAuditEvent);
+    return { summary: this.summarizeReadiness(engagement, allRequirements), requirements, evidence, metrics, competentPersons, auditEvents };
+  }
+
+  async listProjectReadinessSummaries(userId: string, projectId: string): Promise<ContractorReadinessSummary[]> {
+    if (!(await this.getProject(userId, projectId))) return [];
+    const engagements = await this.listProjectEngagements(userId, projectId);
+    const summaries: ContractorReadinessSummary[] = [];
+    for (const engagement of engagements) {
+      summaries.push(this.summarizeReadiness(engagement, await this.listContractorRequirementStatuses(userId, engagement.id)));
+    }
+    return summaries;
+  }
+
+  private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
+    const result = await this.pool.query(
+      `SELECT e.*
+       FROM project_contractor_engagements e
+       JOIN projects p ON p.id = e.project_id
+       WHERE p.owner_user_id = $1 AND e.id = $2`,
+      [userId, engagementId]
+    );
+    return result.rows[0] ? mapEngagement(result.rows[0]) : null;
+  }
+
+  private async getRequirementStatusForUser(userId: string, statusId: string): Promise<ContractorRequirementStatus | null> {
+    const result = await this.pool.query(
+      `SELECT crs.*, rr.id AS rr_id, rr.project_id, rr.title, rr.description, rr.category, rr.source_id,
+              rr.source_chunk_id, rr.citation_label, rr.required, rr.blocking, rr.due_date,
+              rr.created_at AS rr_created_at, rr.updated_at AS rr_updated_at
+       FROM contractor_requirement_statuses crs
+       JOIN readiness_requirements rr ON rr.id = crs.requirement_id
+       JOIN project_contractor_engagements e ON e.id = crs.engagement_id
+       JOIN projects p ON p.id = e.project_id
+       WHERE p.owner_user_id = $1 AND crs.id = $2`,
+      [userId, statusId]
+    );
+    if (!result.rows[0]) return null;
+    const row = result.rows[0];
+    return mapRequirementStatus(row, mapReadinessRequirement({
+      id: row.rr_id,
+      project_id: row.project_id,
+      title: row.title,
+      description: row.description,
+      category: row.category,
+      source_id: row.source_id,
+      source_chunk_id: row.source_chunk_id,
+      citation_label: row.citation_label,
+      required: row.required,
+      blocking: row.blocking,
+      due_date: row.due_date,
+      created_at: row.rr_created_at,
+      updated_at: row.rr_updated_at
+    }));
+  }
+
+  private async getReadinessEvidenceForUser(userId: string, evidenceId: string): Promise<ReadinessEvidence | null> {
+    const result = await this.pool.query(
+      `SELECT re.*
+       FROM readiness_evidence re
+       JOIN contractor_requirement_statuses crs ON crs.id = re.requirement_status_id
+       JOIN project_contractor_engagements e ON e.id = crs.engagement_id
+       JOIN projects p ON p.id = e.project_id
+       WHERE p.owner_user_id = $1 AND re.id = $2`,
+      [userId, evidenceId]
+    );
+    return result.rows[0] ? mapReadinessEvidence(result.rows[0]) : null;
+  }
+
+  private summarizeReadiness(
+    engagement: ProjectContractorEngagement,
+    statuses: ContractorRequirementStatus[]
+  ): ContractorReadinessSummary {
+    const required = statuses.filter((status) => status.requirement?.required !== false && status.requirement?.blocking !== false);
+    const accepted = required.filter((status) => status.status === "accepted").length;
+    const notApplicable = required.filter((status) => status.status === "not_applicable").length;
+    const missingStatuses: ReadinessStatus[] = ["required", "requested"];
+    const missing = required.filter((status) => missingStatuses.includes(status.status)).length;
+    const needsReview = required.filter((status) => ["received", "needs_review"].includes(status.status)).length;
+    const rejectedOrExpired = required.filter((status) => ["rejected", "expired", "replacement_requested"].includes(status.status)).length;
+    const timingWarnings = required
+      .filter((status) => status.plannedMobilizationDate && !["accepted", "not_applicable"].includes(status.status))
+      .map((status) => `${status.requirement?.title ?? "Requirement"} unresolved before ${status.plannedMobilizationDate}`);
+    const totalRequired = required.length;
+    const overallStatus =
+      totalRequired === 0
+        ? "not_started"
+        : rejectedOrExpired > 0
+          ? "attention_required"
+          : accepted + notApplicable === totalRequired
+            ? "ready"
+            : "in_progress";
+    return {
+      engagementId: engagement.id,
+      contractorId: engagement.contractorId,
+      overallStatus,
+      totalRequired,
+      accepted,
+      notApplicable,
+      missing,
+      needsReview,
+      rejectedOrExpired,
+      outstandingItems: required.filter((status) => !["accepted", "not_applicable"].includes(status.status)).map((status) => status.requirement?.title ?? "Requirement"),
+      timingWarnings
+    };
+  }
+
+  private async addAudit(
+    userId: string,
+    engagementId: string,
+    requirementStatusId: string | null,
+    evidenceId: string | null,
+    eventType: string,
+    message: string
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO readiness_audit_events
+       (engagement_id, requirement_status_id, evidence_id, event_type, message, actor_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [engagementId, requirementStatusId, evidenceId, eventType, message, userId]
+    );
   }
 }

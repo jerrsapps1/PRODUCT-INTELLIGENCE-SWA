@@ -4,11 +4,19 @@ import { parse, serialize } from "cookie";
 import { ZodError, type ZodSchema } from "zod";
 import {
   contractorCreateSchema,
+  competentPersonCreateSchema,
+  contractorRequirementApplySchema,
+  contractorRequirementUpdateSchema,
   engagementCreateSchema,
   loginSchema,
   projectSourceActivationSchema,
   projectSourceSchema,
   projectCreateSchema,
+  readinessEvidenceCreateSchema,
+  readinessEvidenceReviewSchema,
+  readinessRequirementCreateSchema,
+  readinessRequirementUpdateSchema,
+  safetyMetricCreateSchema,
   sourceMetadataSchema,
   sourceSearchSchema,
   sourceUpdateSchema,
@@ -19,7 +27,14 @@ import { extractSource, materializeChunks } from "./extraction";
 import { createSessionToken, hashPassword, hashSessionToken, hoursFromNow, verifyPassword } from "./security";
 import { isAllowedFile, maxUploadBytes, sourceCapabilities } from "./sourceCapabilities";
 import { MemoryObjectStorage, type ObjectStorage } from "./storage";
-import { DuplicateEngagementError, DuplicateProjectSourceError, type AppStore, type StoredUser } from "./store";
+import {
+  DuplicateEngagementError,
+  DuplicateEvidenceAssociationError,
+  DuplicateProjectSourceError,
+  DuplicateRequirementApplicationError,
+  type AppStore,
+  type StoredUser
+} from "./store";
 import { readMultipart } from "./upload";
 import { retrieveUrlText } from "./urlSafety";
 
@@ -200,6 +215,108 @@ export async function createApp(options: AppOptions) {
           else sendJson(res, 200, { engagement });
           return;
         }
+      }
+
+      if (parts[0] === "api" && parts[1] === "projects" && parts[3] === "readiness-requirements") {
+        const projectId = parts[2];
+        if (method === "GET" && parts.length === 4) {
+          if (!(await store.getProject(userId, projectId))) {
+            sendJson(res, 404, { error: "Project not found" });
+            return;
+          }
+          sendJson(res, 200, { requirements: await store.listReadinessRequirements(userId, projectId) });
+          return;
+        }
+        if (method === "POST" && parts.length === 4) {
+          const input = await readJson(req, readinessRequirementCreateSchema);
+          sendJson(res, 201, {
+            requirement: await store.createReadinessRequirement(userId, projectId, {
+              ...input,
+              category: input.category ?? "Other",
+              required: input.required ?? true,
+              blocking: input.blocking ?? true
+            })
+          });
+          return;
+        }
+        if (method === "PATCH" && parts.length === 5) {
+          const requirement = await store.updateReadinessRequirement(
+            userId,
+            projectId,
+            parts[4],
+            await readJson(req, readinessRequirementUpdateSchema)
+          );
+          if (!requirement) sendJson(res, 404, { error: "Readiness requirement not found" });
+          else sendJson(res, 200, { requirement });
+          return;
+        }
+      }
+
+      if (method === "GET" && parts[0] === "api" && parts[1] === "projects" && parts[3] === "readiness-summaries") {
+        const projectId = parts[2];
+        if (!(await store.getProject(userId, projectId))) {
+          sendJson(res, 404, { error: "Project not found" });
+          return;
+        }
+        sendJson(res, 200, { summaries: await store.listProjectReadinessSummaries(userId, projectId) });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "engagements" && parts[3] === "readiness") {
+        const engagementId = parts[2];
+        if (method === "GET" && parts.length === 4) {
+          const detail = await store.getContractorReadiness(userId, engagementId, {
+            status: url.searchParams.get("status") ?? undefined,
+            category: url.searchParams.get("category") ?? undefined
+          });
+          if (!detail) sendJson(res, 404, { error: "Contractor engagement not found" });
+          else sendJson(res, 200, { readiness: detail });
+          return;
+        }
+        if (method === "POST" && parts[4] === "requirements" && parts.length === 5) {
+          const input = await readJson(req, contractorRequirementApplySchema);
+          sendJson(res, 201, { status: await store.applyRequirementToEngagement(userId, engagementId, input) });
+          return;
+        }
+      }
+
+      if (method === "PATCH" && parts[0] === "api" && parts[1] === "readiness" && parts[2] === "statuses" && parts.length === 4) {
+        const status = await store.updateContractorRequirementStatus(userId, parts[3], await readJson(req, contractorRequirementUpdateSchema));
+        if (!status) sendJson(res, 404, { error: "Requirement status not found" });
+        else sendJson(res, 200, { status });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/readiness/evidence") {
+        const input = await readJson(req, readinessEvidenceCreateSchema);
+        const evidence = await store.attachReadinessEvidence(userId, {
+          ...input,
+          evidenceRole: input.evidenceRole ?? "supporting_evidence",
+          extractedMetadata: input.extractedMetadata ?? {}
+        });
+        sendJson(res, 201, { evidence });
+        return;
+      }
+
+      if (method === "PATCH" && parts[0] === "api" && parts[1] === "readiness" && parts[2] === "evidence" && parts.length === 4) {
+        const evidence = await store.reviewReadinessEvidence(userId, parts[3], await readJson(req, readinessEvidenceReviewSchema));
+        if (!evidence) sendJson(res, 404, { error: "Readiness evidence not found" });
+        else sendJson(res, 200, { evidence });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/readiness/safety-metrics") {
+        const input = await readJson(req, safetyMetricCreateSchema);
+        sendJson(res, 201, { metric: await store.createSafetyMetric(userId, { ...input, reviewStatus: input.reviewStatus ?? "needs_review" }) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/readiness/competent-persons") {
+        const input = await readJson(req, competentPersonCreateSchema);
+        sendJson(res, 201, {
+          competentPerson: await store.createCompetentPersonEvidence(userId, { ...input, reviewStatus: input.reviewStatus ?? "needs_review" })
+        });
+        return;
       }
 
       if (method === "GET" && parts.join("/") === "api/sources") {
@@ -386,7 +503,22 @@ export async function createApp(options: AppOptions) {
         sendJson(res, 409, { error: error.message });
         return;
       }
-      if (error instanceof Error && (error.message === "Project not found" || error.message === "Contractor not found" || error.message === "Source not found")) {
+      if (error instanceof DuplicateRequirementApplicationError) {
+        sendJson(res, 409, { error: error.message });
+        return;
+      }
+      if (error instanceof DuplicateEvidenceAssociationError) {
+        sendJson(res, 409, { error: error.message });
+        return;
+      }
+      if (error instanceof Error && (
+        error.message === "Project not found" ||
+        error.message === "Contractor not found" ||
+        error.message === "Source not found" ||
+        error.message === "Contractor engagement not found" ||
+        error.message === "Readiness requirement not found" ||
+        error.message === "Requirement status not found"
+      )) {
         sendJson(res, 404, { error: error.message });
         return;
       }

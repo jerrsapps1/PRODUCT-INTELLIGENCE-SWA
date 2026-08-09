@@ -229,6 +229,10 @@ p {
   border-bottom: 1px solid #d6d3c9;
 }
 
+.compact-heading {
+  margin-top: 1rem;
+}
+
 .foundation-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(240px, 0.8fr);
@@ -241,6 +245,12 @@ p {
   border: 1px solid #d0d5cf;
   border-radius: 8px;
   background: #fffdfa;
+}
+
+.compact-detail {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
 }
 
 .source-detail {
@@ -286,6 +296,49 @@ p {
   margin: 0.4rem 0 0;
   color: #3f4b47;
   line-height: 1.5;
+}
+
+.readiness-detail {
+  display: grid;
+  gap: 1rem;
+}
+
+.readiness-strip {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.status-pill,
+.readiness-strip span {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d0d5cf;
+  border-radius: 6px;
+  background: #fffdfa;
+  color: #24312e;
+}
+
+.status-pill span,
+.compact-detail span {
+  color: #65716c;
+  font-size: 0.88rem;
+}
+
+.status-pill.ready {
+  border-color: #2f765d;
+  background: #e9f5ed;
+}
+
+.status-pill.attention_required {
+  border-color: #b44e38;
+  background: #fae4df;
+}
+
+.status-pill.in_progress {
+  border-color: #9b7a32;
+  background: #fbf0d6;
 }
 
 .upload-zone {

@@ -15,6 +15,19 @@ export const authorityClassifications = [
 ] as const;
 export const processingStatuses = ["uploaded", "processing", "ready", "partial", "failed"] as const;
 export const activationStatuses = ["available", "associated", "active"] as const;
+export const readinessStatuses = [
+  "required",
+  "requested",
+  "received",
+  "needs_review",
+  "accepted",
+  "rejected",
+  "expired",
+  "replacement_requested",
+  "not_applicable"
+] as const;
+export const overallReadinessStatuses = ["not_started", "in_progress", "ready", "attention_required"] as const;
+export const safetyMetricTypes = ["emr", "trir", "dart", "other"] as const;
 
 export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, "Project name is required").max(160),
@@ -89,6 +102,68 @@ export const urlSourceCreateSchema = sourceMetadataBaseSchema.extend({
   message: "Project sources require a project"
 });
 
+export const readinessRequirementCreateSchema = z.object({
+  title: z.string().trim().min(1).max(180),
+  description: z.string().trim().max(2000).optional().or(z.literal("")),
+  category: z.string().trim().min(1).max(120).default("Other"),
+  sourceId: z.string().uuid().optional().or(z.literal("")),
+  sourceChunkId: z.string().uuid().optional().or(z.literal("")),
+  citationLabel: z.string().trim().max(220).optional().or(z.literal("")),
+  required: z.coerce.boolean().default(true),
+  blocking: z.coerce.boolean().default(true),
+  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal(""))
+});
+
+export const readinessRequirementUpdateSchema = readinessRequirementCreateSchema.partial();
+
+export const contractorRequirementApplySchema = z.object({
+  requirementId: z.string().uuid()
+});
+
+export const contractorRequirementUpdateSchema = z.object({
+  status: z.enum(readinessStatuses).optional(),
+  reviewerNotes: z.string().trim().max(2000).optional().or(z.literal("")),
+  plannedMobilizationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal(""))
+});
+
+export const readinessEvidenceCreateSchema = z.object({
+  requirementStatusId: z.string().uuid(),
+  sourceId: z.string().uuid(),
+  sourceChunkId: z.string().uuid().optional().or(z.literal("")),
+  evidenceRole: z.string().trim().max(120).default("supporting_evidence"),
+  extractedMetadata: z.record(z.unknown()).default({}),
+  reviewerNotes: z.string().trim().max(2000).optional().or(z.literal(""))
+});
+
+export const readinessEvidenceReviewSchema = z.object({
+  reviewStatus: z.enum(["needs_review", "accepted", "rejected", "expired", "replacement_requested"]),
+  reviewerNotes: z.string().trim().max(2000).optional().or(z.literal(""))
+});
+
+export const safetyMetricCreateSchema = z.object({
+  engagementId: z.string().uuid(),
+  metricType: z.enum(safetyMetricTypes),
+  metricName: z.string().trim().max(80).optional().or(z.literal("")),
+  periodYear: z.coerce.number().int().min(1900).max(2200),
+  value: z.coerce.number().nonnegative(),
+  sourceId: z.string().uuid(),
+  evidenceId: z.string().uuid().optional().or(z.literal("")),
+  reviewStatus: z.enum(readinessStatuses).default("needs_review"),
+  reviewerNotes: z.string().trim().max(2000).optional().or(z.literal(""))
+});
+
+export const competentPersonCreateSchema = z.object({
+  engagementId: z.string().uuid(),
+  personName: z.string().trim().min(1).max(160),
+  designation: z.string().trim().min(1).max(160),
+  authorizationSourceId: z.string().uuid(),
+  trainingSourceId: z.string().uuid().optional().or(z.literal("")),
+  effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+  expirationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+  reviewStatus: z.enum(readinessStatuses).default("needs_review"),
+  reviewerNotes: z.string().trim().max(2000).optional().or(z.literal(""))
+});
+
 export type FederalClassification = (typeof federalClassifications)[number];
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ContractorCreateInput = z.infer<typeof contractorCreateSchema>;
@@ -105,6 +180,17 @@ export type SourceSearchInput = z.infer<typeof sourceSearchSchema>;
 export type ProjectSourceInput = z.infer<typeof projectSourceSchema>;
 export type ProjectSourceActivationInput = z.infer<typeof projectSourceActivationSchema>;
 export type UrlSourceCreateInput = z.infer<typeof urlSourceCreateSchema>;
+export type ReadinessStatus = (typeof readinessStatuses)[number];
+export type OverallReadinessStatus = (typeof overallReadinessStatuses)[number];
+export type SafetyMetricType = (typeof safetyMetricTypes)[number];
+export type ReadinessRequirementCreateInput = z.infer<typeof readinessRequirementCreateSchema>;
+export type ReadinessRequirementUpdateInput = z.infer<typeof readinessRequirementUpdateSchema>;
+export type ContractorRequirementApplyInput = z.infer<typeof contractorRequirementApplySchema>;
+export type ContractorRequirementUpdateInput = z.infer<typeof contractorRequirementUpdateSchema>;
+export type ReadinessEvidenceCreateInput = z.infer<typeof readinessEvidenceCreateSchema>;
+export type ReadinessEvidenceReviewInput = z.infer<typeof readinessEvidenceReviewSchema>;
+export type SafetyMetricCreateInput = z.infer<typeof safetyMetricCreateSchema>;
+export type CompetentPersonCreateInput = z.infer<typeof competentPersonCreateSchema>;
 
 export interface UserSummary {
   id: string;
@@ -196,6 +282,119 @@ export interface ProjectSourceLink {
 export interface SourceDetail extends SourceRecord {
   chunks: SourceChunk[];
   projectLinks: ProjectSourceLink[];
+}
+
+export interface ReadinessRequirement {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  category: string;
+  sourceId: string | null;
+  sourceChunkId: string | null;
+  citationLabel: string | null;
+  required: boolean;
+  blocking: boolean;
+  dueDate: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContractorRequirementStatus {
+  id: string;
+  requirementId: string;
+  engagementId: string;
+  status: ReadinessStatus;
+  reviewerNotes: string | null;
+  plannedMobilizationDate: string | null;
+  reviewedAt: string | null;
+  reviewedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  requirement?: ReadinessRequirement;
+}
+
+export interface ReadinessEvidence {
+  id: string;
+  requirementStatusId: string;
+  sourceId: string;
+  sourceChunkId: string | null;
+  evidenceRole: string;
+  reviewStatus: ReadinessStatus;
+  extractedMetadata: Record<string, unknown>;
+  reviewerConfirmedMetadata: Record<string, unknown>;
+  reviewerNotes: string | null;
+  reviewedAt: string | null;
+  reviewedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  source?: SourceRecord;
+}
+
+export interface SafetyMetric {
+  id: string;
+  contractorId: string;
+  engagementId: string | null;
+  metricType: SafetyMetricType;
+  metricName: string | null;
+  periodYear: number;
+  value: number;
+  sourceId: string;
+  evidenceId: string | null;
+  reviewStatus: ReadinessStatus;
+  reviewerNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CompetentPersonEvidence {
+  id: string;
+  engagementId: string;
+  contractorId: string;
+  personName: string;
+  designation: string;
+  authorizationSourceId: string;
+  trainingSourceId: string | null;
+  effectiveDate: string | null;
+  expirationDate: string | null;
+  reviewStatus: ReadinessStatus;
+  reviewerNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReadinessAuditEvent {
+  id: string;
+  engagementId: string;
+  requirementStatusId: string | null;
+  evidenceId: string | null;
+  eventType: string;
+  message: string;
+  actorUserId: string;
+  createdAt: string;
+}
+
+export interface ContractorReadinessSummary {
+  engagementId: string;
+  contractorId: string;
+  overallStatus: OverallReadinessStatus;
+  totalRequired: number;
+  accepted: number;
+  notApplicable: number;
+  missing: number;
+  needsReview: number;
+  rejectedOrExpired: number;
+  outstandingItems: string[];
+  timingWarnings: string[];
+}
+
+export interface ContractorReadinessDetail {
+  summary: ContractorReadinessSummary;
+  requirements: ContractorRequirementStatus[];
+  evidence: ReadinessEvidence[];
+  metrics: SafetyMetric[];
+  competentPersons: CompetentPersonEvidence[];
+  auditEvents: ReadinessAuditEvent[];
 }
 
 export interface ApiErrorBody {

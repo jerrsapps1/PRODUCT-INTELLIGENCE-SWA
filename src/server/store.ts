@@ -8,11 +8,27 @@ import type {
   ProjectSourceActivationInput,
   ProjectSourceInput,
   ProjectSourceLink,
+  CompetentPersonCreateInput,
+  CompetentPersonEvidence,
+  ContractorReadinessDetail,
+  ContractorReadinessSummary,
+  ContractorRequirementApplyInput,
+  ContractorRequirementUpdateInput,
+  ContractorRequirementStatus,
   SourceChunk,
   SourceDetail,
   SourceRecord,
   SourceSearchInput,
   SourceUpdateInput,
+  ReadinessAuditEvent,
+  ReadinessEvidence,
+  ReadinessEvidenceCreateInput,
+  ReadinessEvidenceReviewInput,
+  ReadinessRequirement,
+  ReadinessRequirementCreateInput,
+  ReadinessRequirementUpdateInput,
+  SafetyMetric,
+  SafetyMetricCreateInput,
   UserSummary
 } from "../shared/contracts";
 
@@ -67,6 +83,18 @@ export interface AppStore {
   ): Promise<ProjectSourceLink | null>;
   removeSourceFromProject(userId: string, projectId: string, sourceId: string): Promise<void>;
   searchSourceChunks(userId: string, filters: SourceSearchInput): Promise<SourceChunk[]>;
+  listReadinessRequirements(userId: string, projectId: string): Promise<ReadinessRequirement[]>;
+  createReadinessRequirement(userId: string, projectId: string, input: ReadinessRequirementCreateInput): Promise<ReadinessRequirement>;
+  updateReadinessRequirement(userId: string, projectId: string, requirementId: string, input: ReadinessRequirementUpdateInput): Promise<ReadinessRequirement | null>;
+  applyRequirementToEngagement(userId: string, engagementId: string, input: ContractorRequirementApplyInput): Promise<ContractorRequirementStatus>;
+  listContractorRequirementStatuses(userId: string, engagementId: string): Promise<ContractorRequirementStatus[]>;
+  updateContractorRequirementStatus(userId: string, statusId: string, input: ContractorRequirementUpdateInput): Promise<ContractorRequirementStatus | null>;
+  attachReadinessEvidence(userId: string, input: ReadinessEvidenceCreateInput): Promise<ReadinessEvidence>;
+  reviewReadinessEvidence(userId: string, evidenceId: string, input: ReadinessEvidenceReviewInput): Promise<ReadinessEvidence | null>;
+  createSafetyMetric(userId: string, input: SafetyMetricCreateInput): Promise<SafetyMetric>;
+  createCompetentPersonEvidence(userId: string, input: CompetentPersonCreateInput): Promise<CompetentPersonEvidence>;
+  getContractorReadiness(userId: string, engagementId: string, filters?: { status?: string; category?: string }): Promise<ContractorReadinessDetail | null>;
+  listProjectReadinessSummaries(userId: string, projectId: string): Promise<ContractorReadinessSummary[]>;
 }
 
 export class DuplicateEngagementError extends Error {
@@ -78,5 +106,17 @@ export class DuplicateEngagementError extends Error {
 export class DuplicateProjectSourceError extends Error {
   constructor() {
     super("Source is already associated with this project");
+  }
+}
+
+export class DuplicateRequirementApplicationError extends Error {
+  constructor() {
+    super("Requirement is already applied to this contractor engagement");
+  }
+}
+
+export class DuplicateEvidenceAssociationError extends Error {
+  constructor() {
+    super("Source evidence is already attached to this requirement");
   }
 }

@@ -233,6 +233,161 @@ describe("Phase 1 API", () => {
     expect(response.status).toBe(400);
   });
 
+  it("manages contractor readiness without auto-approving evidence or cross-project history", async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/projects/not-a-real-project/readiness-requirements`);
+    expect(unauthenticated.status).toBe(401);
+
+    const cookie = await login();
+    const project = await createProject(cookie, "Readiness Project");
+    const contractor = await createContractor(cookie, "Ready Steel");
+    const engagement = await createEngagement(cookie, project.id, contractor.id, "Structural steel");
+    const requirementSource = await uploadTextSource(cookie, "Project Safety Manual", "EMR, training, and insurance readiness");
+    const submissionSource = await uploadTextSource(cookie, "Ready Steel EMR Letter", "2025 EMR 0.82 TRIR 1.1 DART 0.4");
+
+    const requirementResponse = await fetch(`${baseUrl}/api/projects/${project.id}/readiness-requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        title: "Current EMR letter",
+        category: "Safety Metrics",
+        sourceId: requirementSource.id,
+        citationLabel: "Project manual section 3"
+      })
+    });
+    expect(requirementResponse.status).toBe(201);
+    const { requirement } = await json<{ requirement: { id: string } }>(requirementResponse);
+
+    const applyResponse = await fetch(`${baseUrl}/api/engagements/${engagement.id}/readiness/requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ requirementId: requirement.id })
+    });
+    expect(applyResponse.status).toBe(201);
+    const applied = await json<{ status: { id: string; status: string } }>(applyResponse);
+    expect(applied.status.status).toBe("required");
+
+    const duplicateApply = await fetch(`${baseUrl}/api/engagements/${engagement.id}/readiness/requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ requirementId: requirement.id })
+    });
+    expect(duplicateApply.status).toBe(409);
+
+    const mobilization = await fetch(`${baseUrl}/api/readiness/statuses/${applied.status.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ status: "requested", plannedMobilizationDate: "2026-10-01" })
+    });
+    expect(mobilization.status).toBe(200);
+
+    const evidenceResponse = await fetch(`${baseUrl}/api/readiness/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        requirementStatusId: applied.status.id,
+        sourceId: submissionSource.id,
+        extractedMetadata: { emr: 0.82 }
+      })
+    });
+    expect(evidenceResponse.status).toBe(201);
+    const evidence = await json<{ evidence: { id: string; reviewStatus: string } }>(evidenceResponse);
+    expect(evidence.evidence.reviewStatus).toBe("needs_review");
+
+    const duplicateEvidence = await fetch(`${baseUrl}/api/readiness/evidence`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ requirementStatusId: applied.status.id, sourceId: submissionSource.id })
+    });
+    expect(duplicateEvidence.status).toBe(409);
+
+    const received = await json<{ readiness: { summary: { overallStatus: string; needsReview: number; accepted: number; timingWarnings: string[] }; requirements: Array<{ status: string }> } }>(
+      await fetch(`${baseUrl}/api/engagements/${engagement.id}/readiness`, { headers: { cookie } })
+    );
+    expect(received.readiness.summary.overallStatus).toBe("in_progress");
+    expect(received.readiness.summary.needsReview).toBe(1);
+    expect(received.readiness.summary.accepted).toBe(0);
+    expect(received.readiness.summary.timingWarnings[0]).toContain("2026-10-01");
+    expect(received.readiness.requirements[0].status).toBe("received");
+
+    const review = await fetch(`${baseUrl}/api/readiness/evidence/${evidence.evidence.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ reviewStatus: "accepted", reviewerNotes: "Matches source document." })
+    });
+    expect(review.status).toBe(200);
+
+    const ready = await json<{ readiness: { summary: { overallStatus: string; accepted: number }; evidence: Array<{ source: { id: string } }>; auditEvents: unknown[] } }>(
+      await fetch(`${baseUrl}/api/engagements/${engagement.id}/readiness`, { headers: { cookie } })
+    );
+    expect(ready.readiness.summary).toEqual(expect.objectContaining({ overallStatus: "ready", accepted: 1 }));
+    expect(ready.readiness.evidence[0].source.id).toBe(submissionSource.id);
+    expect(ready.readiness.auditEvents.length).toBeGreaterThanOrEqual(3);
+
+    const metric = await fetch(`${baseUrl}/api/readiness/safety-metrics`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ engagementId: engagement.id, metricType: "emr", periodYear: 2025, value: 0.82, sourceId: submissionSource.id })
+    });
+    expect(metric.status).toBe(201);
+
+    const competentPerson = await fetch(`${baseUrl}/api/readiness/competent-persons`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        engagementId: engagement.id,
+        personName: "Jordan Lee",
+        designation: "Competent person - excavation",
+        authorizationSourceId: submissionSource.id,
+        reviewStatus: "accepted"
+      })
+    });
+    expect(competentPerson.status).toBe(201);
+
+    const enriched = await json<{ readiness: { metrics: unknown[]; competentPersons: unknown[] } }>(
+      await fetch(`${baseUrl}/api/engagements/${engagement.id}/readiness`, { headers: { cookie } })
+    );
+    expect(enriched.readiness.metrics).toHaveLength(1);
+    expect(enriched.readiness.competentPersons).toHaveLength(1);
+
+    const secondContractor = await createContractor(cookie, "Fresh Concrete");
+    const secondEngagement = await createEngagement(cookie, project.id, secondContractor.id, "Concrete");
+    await fetch(`${baseUrl}/api/engagements/${secondEngagement.id}/readiness/requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ requirementId: requirement.id })
+    });
+    const secondSummary = await json<{ readiness: { summary: { overallStatus: string; missing: number } } }>(
+      await fetch(`${baseUrl}/api/engagements/${secondEngagement.id}/readiness`, { headers: { cookie } })
+    );
+    expect(secondSummary.readiness.summary).toEqual(expect.objectContaining({ overallStatus: "in_progress", missing: 1 }));
+
+    const secondProject = await createProject(cookie, "Future Project");
+    const laterEngagement = await createEngagement(cookie, secondProject.id, contractor.id, "Steel again");
+    const laterReadiness = await json<{ readiness: { summary: { overallStatus: string; totalRequired: number } } }>(
+      await fetch(`${baseUrl}/api/engagements/${laterEngagement.id}/readiness`, { headers: { cookie } })
+    );
+    expect(laterReadiness.readiness.summary).toEqual(expect.objectContaining({ overallStatus: "not_started", totalRequired: 0 }));
+
+    const optionalRequirement = await json<{ requirement: { id: string } }>(await fetch(`${baseUrl}/api/projects/${project.id}/readiness-requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ title: "Optional orientation", category: "Training", required: false, blocking: false })
+    }));
+    const optionalApply = await json<{ status: { id: string; status: string } }>(await fetch(`${baseUrl}/api/engagements/${engagement.id}/readiness/requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ requirementId: optionalRequirement.requirement.id })
+    }));
+    expect(optionalApply.status.status).toBe("not_applicable");
+
+    const invalidRequirement = await fetch(`${baseUrl}/api/projects/${project.id}/readiness-requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ title: "" })
+    });
+    expect(invalidRequirement.status).toBe(400);
+  });
+
   async function login(): Promise<string> {
     const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",
@@ -265,6 +420,17 @@ describe("Phase 1 API", () => {
     expect(response.status).toBe(201);
     const body = await json<{ contractor: { id: string } }>(response);
     return body.contractor;
+  }
+
+  async function createEngagement(cookie: string, projectId: string, contractorId: string, scopeSummary: string): Promise<{ id: string }> {
+    const response = await fetch(`${baseUrl}/api/projects/${projectId}/contractors`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ contractorId, scopeSummary })
+    });
+    expect(response.status).toBe(201);
+    const body = await json<{ engagement: { id: string } }>(response);
+    return body.engagement;
   }
 
   async function uploadTextSource(cookie: string, title: string, text: string): Promise<{ id: string }> {

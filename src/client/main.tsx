@@ -3,9 +3,14 @@ import { createRoot } from "react-dom/client";
 import type {
   AuthorityClassification,
   Contractor,
+  ContractorReadinessDetail,
+  ContractorReadinessSummary,
+  ContractorRequirementStatus,
   Project,
   ProjectContractorEngagement,
   ProjectSourceLink,
+  ReadinessRequirement,
+  ReadinessStatus,
   SourceDetail,
   SourceRecord,
   SourceScope,
@@ -14,6 +19,18 @@ import type {
 import "./styles.css";
 
 type View = "sources" | "workspace" | "workbench";
+
+const readinessStatusOptions: Array<{ value: ReadinessStatus; label: string }> = [
+  { value: "required", label: "Required" },
+  { value: "requested", label: "Requested" },
+  { value: "received", label: "Received" },
+  { value: "needs_review", label: "Needs review" },
+  { value: "accepted", label: "Accepted" },
+  { value: "rejected", label: "Rejected" },
+  { value: "expired", label: "Expired" },
+  { value: "replacement_requested", label: "Replacement requested" },
+  { value: "not_applicable", label: "Not applicable" }
+];
 
 const authorityOptions: Array<{ value: AuthorityClassification; label: string }> = [
   { value: "regulatory_requirement", label: "Regulatory requirement" },
@@ -118,6 +135,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
   const [activeSource, setActiveSource] = useState<SourceDetail | null>(null);
   const [activeEngagementId, setActiveEngagementId] = useState<string | null>(null);
+  const [readinessRequirements, setReadinessRequirements] = useState<ReadinessRequirement[]>([]);
+  const [readinessSummaries, setReadinessSummaries] = useState<ContractorReadinessSummary[]>([]);
+  const [activeReadiness, setActiveReadiness] = useState<ContractorReadinessDetail | null>(null);
   const [activeView, setActiveView] = useState<View>("workspace");
   const [status, setStatus] = useState("Loading records...");
   const [error, setError] = useState("");
@@ -144,6 +164,30 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     }
     const body = await api<{ projectSources: ProjectSourceLink[] }>(`/api/projects/${projectId}/sources`);
     setProjectSources(body.projectSources);
+  }
+
+  async function reloadReadinessRequirements(projectId = selectedProjectId) {
+    if (!projectId) {
+      setReadinessRequirements([]);
+      setReadinessSummaries([]);
+      return;
+    }
+    const [requirementsBody, summariesBody] = await Promise.all([
+      api<{ requirements: ReadinessRequirement[] }>(`/api/projects/${projectId}/readiness-requirements`),
+      api<{ summaries: ContractorReadinessSummary[] }>(`/api/projects/${projectId}/readiness-summaries`)
+    ]);
+    setReadinessRequirements(requirementsBody.requirements);
+    setReadinessSummaries(summariesBody.summaries);
+  }
+
+  async function reloadActiveReadiness(engagementId = activeEngagementId) {
+    if (!engagementId) {
+      setActiveReadiness(null);
+      return;
+    }
+    const body = await api<{ readiness: ContractorReadinessDetail }>(`/api/engagements/${engagementId}/readiness`);
+    setActiveReadiness(body.readiness);
+    await reloadReadinessRequirements();
   }
 
   async function refreshSourceContext(sourceId = activeSourceId) {
@@ -180,6 +224,8 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     if (!selectedProjectId) {
       setEngagements([]);
       setProjectSources([]);
+      setReadinessRequirements([]);
+      setReadinessSummaries([]);
       return;
     }
     api<{ engagements: ProjectContractorEngagement[] }>(`/api/projects/${selectedProjectId}/contractors`)
@@ -190,6 +236,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load engagements"));
     reloadProjectSources(selectedProjectId).catch((loadError) =>
       setError(loadError instanceof Error ? loadError.message : "Unable to load project sources")
+    );
+    reloadReadinessRequirements(selectedProjectId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load readiness")
     );
   }, [selectedProjectId]);
 
@@ -202,6 +251,12 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       .then((body) => setActiveSource(body.source))
       .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Unable to load source"));
   }, [activeSourceId]);
+
+  useEffect(() => {
+    reloadActiveReadiness(activeEngagementId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load contractor readiness")
+    );
+  }, [activeEngagementId]);
 
   async function logout() {
     await api<void>("/api/auth/logout", { method: "POST" });
@@ -262,6 +317,8 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             engagements={engagements}
             activeEngagement={activeEngagement}
             activeSource={activeSource}
+            readiness={activeReadiness}
+            summaries={readinessSummaries}
           />
         </section>
 
@@ -290,6 +347,14 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
               setActiveEngagementId(id);
               setActiveView("workspace");
             }}
+          />
+          <ReadinessWorkbench
+            project={selectedProject}
+            activeEngagement={activeEngagement}
+            requirements={readinessRequirements}
+            readiness={activeReadiness}
+            sources={sources}
+            onChanged={reloadActiveReadiness}
           />
         </aside>
       </section>
@@ -403,12 +468,16 @@ function WorkspacePanel({
   project,
   engagements,
   activeEngagement,
-  activeSource
+  activeSource,
+  readiness,
+  summaries
 }: {
   project: Project | null;
   engagements: ProjectContractorEngagement[];
   activeEngagement: ProjectContractorEngagement | null;
   activeSource: SourceDetail | null;
+  readiness: ContractorReadinessDetail | null;
+  summaries: ContractorReadinessSummary[];
 }) {
   if (!project) {
     return <div className="empty-state"><h2>No project open</h2><p>Create or select a blank project from the left panel.</p></div>;
@@ -437,6 +506,7 @@ function WorkspacePanel({
         <div>
           <h3>Project contractors</h3>
           {engagements.length === 0 ? <p className="empty">No contractor engagements on this project yet.</p> : null}
+          <ReadinessSummaryList summaries={summaries} engagements={engagements} />
           {activeEngagement ? (
             <article className="detail">
               <h4>{activeEngagement.contractor?.legalName}</h4>
@@ -444,9 +514,73 @@ function WorkspacePanel({
               <p>{activeEngagement.scopeSummary ?? "No scope summary entered."}</p>
             </article>
           ) : null}
+          <ReadinessDetailView readiness={readiness} />
         </div>
       </section>
     </>
+  );
+}
+
+function ReadinessSummaryList({
+  summaries,
+  engagements
+}: {
+  summaries: ContractorReadinessSummary[];
+  engagements: ProjectContractorEngagement[];
+}) {
+  if (summaries.length === 0) return null;
+  return (
+    <div className="readiness-strip">
+      {summaries.map((summary) => {
+        const engagement = engagements.find((item) => item.id === summary.engagementId);
+        return (
+          <div key={summary.engagementId} className={`status-pill ${summary.overallStatus}`}>
+            <strong>{engagement?.contractor?.legalName ?? "Contractor"}</strong>
+            <span>{readinessLabel(summary.overallStatus)} - {summary.accepted}/{summary.totalRequired} accepted</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ReadinessDetailView({ readiness }: { readiness: ContractorReadinessDetail | null }) {
+  if (!readiness) return <p className="empty">Open a contractor engagement to review readiness requirements and evidence.</p>;
+  return (
+    <section className="readiness-detail" aria-labelledby="readiness-heading">
+      <div className="project-heading compact-heading">
+        <div>
+          <p className="eyebrow">Contractor readiness</p>
+          <h3 id="readiness-heading">{readinessLabel(readiness.summary.overallStatus)}</h3>
+        </div>
+        <span>{readiness.summary.accepted}/{readiness.summary.totalRequired} accepted</span>
+      </div>
+      <dl className="metadata-grid">
+        <div><dt>Missing</dt><dd>{readiness.summary.missing}</dd></div>
+        <div><dt>Needs review</dt><dd>{readiness.summary.needsReview}</dd></div>
+        <div><dt>Attention</dt><dd>{readiness.summary.rejectedOrExpired}</dd></div>
+        <div><dt>Not applicable</dt><dd>{readiness.summary.notApplicable}</dd></div>
+      </dl>
+      {readiness.summary.timingWarnings.length ? (
+        <p className="form-error">{readiness.summary.timingWarnings.join(" ")}</p>
+      ) : null}
+      <div className="list">
+        {readiness.requirements.length === 0 ? <p className="empty">No requirements have been applied to this engagement.</p> : null}
+        {readiness.requirements.map((item) => (
+          <article key={item.id} className="detail compact-detail">
+            <strong>{item.requirement?.title ?? "Requirement"}</strong>
+            <span>{statusLabel(item.status)} - {item.requirement?.category ?? "Other"}</span>
+            {item.reviewerNotes ? <p>{item.reviewerNotes}</p> : null}
+          </article>
+        ))}
+      </div>
+      {readiness.metrics.length || readiness.competentPersons.length ? (
+        <div className="readiness-strip">
+          <span>{readiness.metrics.length} safety metric records</span>
+          <span>{readiness.competentPersons.length} competent person records</span>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -722,8 +856,244 @@ function ContractorPanel({
   );
 }
 
+function ReadinessWorkbench({
+  project,
+  activeEngagement,
+  requirements,
+  readiness,
+  sources,
+  onChanged
+}: {
+  project: Project | null;
+  activeEngagement: ProjectContractorEngagement | null;
+  requirements: ReadinessRequirement[];
+  readiness: ContractorReadinessDetail | null;
+  sources: SourceRecord[];
+  onChanged: (engagementId?: string | null) => Promise<void>;
+}) {
+  const [title, setTitle] = useState("");
+  const [category, setCategory] = useState("Safety Metrics");
+  const [requirementSourceId, setRequirementSourceId] = useState("");
+  const [requirementId, setRequirementId] = useState("");
+  const [statusId, setStatusId] = useState("");
+  const [evidenceSourceId, setEvidenceSourceId] = useState("");
+  const [reviewStatus, setReviewStatus] = useState<ReadinessStatus>("accepted");
+  const [plannedMobilizationDate, setPlannedMobilizationDate] = useState("");
+  const [metricType, setMetricType] = useState<"emr" | "trir" | "dart" | "other">("emr");
+  const [metricValue, setMetricValue] = useState("");
+  const [metricYear, setMetricYear] = useState(String(new Date().getFullYear()));
+  const [personName, setPersonName] = useState("");
+  const [designation, setDesignation] = useState("");
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const availableSources = sources.filter((source) => source.processingStatus === "ready");
+  const requirementStatuses = readiness?.requirements ?? [];
+
+  async function run(action: () => Promise<void>, message: string) {
+    setError("");
+    setStatus(message);
+    try {
+      await action();
+      if (activeEngagement) await onChanged(activeEngagement.id);
+    } catch (readinessError) {
+      setError(readinessError instanceof Error ? readinessError.message : "Readiness update failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  async function createRequirement(event: FormEvent) {
+    event.preventDefault();
+    if (!project) return;
+    await run(async () => {
+      const body = await api<{ requirement: ReadinessRequirement }>(`/api/projects/${project.id}/readiness-requirements`, {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          category,
+          sourceId: requirementSourceId,
+          required: true,
+          blocking: true
+        })
+      });
+      setTitle("");
+      setRequirementId(body.requirement.id);
+    }, "Creating requirement...");
+  }
+
+  async function applyRequirement() {
+    if (!activeEngagement || !requirementId) return;
+    await run(async () => {
+      const body = await api<{ status: ContractorRequirementStatus }>(`/api/engagements/${activeEngagement.id}/readiness/requirements`, {
+        method: "POST",
+        body: JSON.stringify({ requirementId })
+      });
+      setStatusId(body.status.id);
+    }, "Applying requirement...");
+  }
+
+  async function attachEvidence() {
+    if (!statusId || !evidenceSourceId) return;
+    await run(async () => {
+      await api<{ evidence: unknown }>("/api/readiness/evidence", {
+        method: "POST",
+        body: JSON.stringify({ requirementStatusId: statusId, sourceId: evidenceSourceId })
+      });
+    }, "Attaching evidence...");
+  }
+
+  async function updateStatus(nextStatus: ReadinessStatus) {
+    if (!statusId) return;
+    await run(async () => {
+      await api<{ status: ContractorRequirementStatus }>(`/api/readiness/statuses/${statusId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus, plannedMobilizationDate })
+      });
+    }, "Updating readiness status...");
+  }
+
+  async function reviewEvidence() {
+    const evidence = readiness?.evidence.find((item) => item.requirementStatusId === statusId);
+    if (!evidence) return;
+    await run(async () => {
+      await api<{ evidence: unknown }>(`/api/readiness/evidence/${evidence.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ reviewStatus })
+      });
+    }, "Reviewing evidence...");
+  }
+
+  async function addMetric(event: FormEvent) {
+    event.preventDefault();
+    if (!activeEngagement || !evidenceSourceId) return;
+    await run(async () => {
+      await api<{ metric: unknown }>("/api/readiness/safety-metrics", {
+        method: "POST",
+        body: JSON.stringify({
+          engagementId: activeEngagement.id,
+          metricType,
+          periodYear: metricYear,
+          value: metricValue,
+          sourceId: evidenceSourceId
+        })
+      });
+      setMetricValue("");
+    }, "Recording metric...");
+  }
+
+  async function addCompetentPerson(event: FormEvent) {
+    event.preventDefault();
+    if (!activeEngagement || !evidenceSourceId) return;
+    await run(async () => {
+      await api<{ competentPerson: unknown }>("/api/readiness/competent-persons", {
+        method: "POST",
+        body: JSON.stringify({
+          engagementId: activeEngagement.id,
+          personName,
+          designation,
+          authorizationSourceId: evidenceSourceId,
+          reviewStatus: "needs_review"
+        })
+      });
+      setPersonName("");
+      setDesignation("");
+    }, "Recording competent person...");
+  }
+
+  return (
+    <section className="workbench-section">
+      <h2>Readiness</h2>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {status ? <p className="banner muted">{status}</p> : null}
+      <form onSubmit={createRequirement} className="stack compact">
+        <label htmlFor="readiness-title">Requirement<input id="readiness-title" value={title} onChange={(event) => setTitle(event.target.value)} required disabled={!project} /></label>
+        <label htmlFor="readiness-category">Category<input id="readiness-category" value={category} onChange={(event) => setCategory(event.target.value)} disabled={!project} /></label>
+        <label htmlFor="readiness-source">
+          Requirement source
+          <select id="readiness-source" value={requirementSourceId} onChange={(event) => setRequirementSourceId(event.target.value)} disabled={!project}>
+            <option value="">No citation source</option>
+            {availableSources.map((source) => <option key={source.id} value={source.id}>{source.title}</option>)}
+          </select>
+        </label>
+        <button className="secondary" disabled={!project || !title}>Create requirement</button>
+      </form>
+      <div className="stack compact">
+        <label htmlFor="apply-requirement">
+          Apply to engagement
+          <select id="apply-requirement" value={requirementId} onChange={(event) => setRequirementId(event.target.value)} disabled={!activeEngagement}>
+            <option value="">Choose requirement</option>
+            {requirements.map((requirement) => <option key={requirement.id} value={requirement.id}>{requirement.title}</option>)}
+          </select>
+        </label>
+        <button className="primary" disabled={!activeEngagement || !requirementId} type="button" onClick={applyRequirement}>Apply requirement</button>
+      </div>
+      <div className="stack compact">
+        <label htmlFor="status-record">
+          Requirement status
+          <select id="status-record" value={statusId} onChange={(event) => setStatusId(event.target.value)} disabled={!activeEngagement}>
+            <option value="">Choose applied requirement</option>
+            {requirementStatuses.map((item) => <option key={item.id} value={item.id}>{item.requirement?.title ?? item.id} - {statusLabel(item.status)}</option>)}
+          </select>
+        </label>
+        <label htmlFor="mobilization-date">Planned mobilization<input id="mobilization-date" type="date" value={plannedMobilizationDate} onChange={(event) => setPlannedMobilizationDate(event.target.value)} /></label>
+        <label htmlFor="evidence-source">
+          Evidence source
+          <select id="evidence-source" value={evidenceSourceId} onChange={(event) => setEvidenceSourceId(event.target.value)} disabled={!activeEngagement}>
+            <option value="">Choose received source</option>
+            {availableSources.map((source) => <option key={source.id} value={source.id}>{source.title}</option>)}
+          </select>
+        </label>
+        <button className="secondary" disabled={!statusId} type="button" onClick={() => updateStatus("requested")}>Mark requested</button>
+        <button className="secondary" disabled={!statusId || !evidenceSourceId} type="button" onClick={attachEvidence}>Attach evidence</button>
+        <label htmlFor="review-status">
+          Review outcome
+          <select id="review-status" value={reviewStatus} onChange={(event) => setReviewStatus(event.target.value as ReadinessStatus)}>
+            {readinessStatusOptions.filter((option) => ["needs_review", "accepted", "rejected", "expired", "replacement_requested"].includes(option.value)).map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <button className="primary" disabled={!statusId || !readiness?.evidence.some((item) => item.requirementStatusId === statusId)} type="button" onClick={reviewEvidence}>Review evidence</button>
+        <button className="secondary" disabled={!statusId} type="button" onClick={() => updateStatus("not_applicable")}>Not applicable</button>
+      </div>
+      <form onSubmit={addMetric} className="stack compact">
+        <h3>Safety metrics</h3>
+        <label htmlFor="metric-type">
+          Metric
+          <select id="metric-type" value={metricType} onChange={(event) => setMetricType(event.target.value as typeof metricType)}>
+            <option value="emr">EMR</option>
+            <option value="trir">TRIR</option>
+            <option value="dart">DART</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label htmlFor="metric-year">Year<input id="metric-year" value={metricYear} onChange={(event) => setMetricYear(event.target.value)} inputMode="numeric" /></label>
+        <label htmlFor="metric-value">Value<input id="metric-value" value={metricValue} onChange={(event) => setMetricValue(event.target.value)} inputMode="decimal" /></label>
+        <button className="secondary" disabled={!activeEngagement || !evidenceSourceId || !metricValue}>Record metric</button>
+      </form>
+      <form onSubmit={addCompetentPerson} className="stack compact">
+        <h3>Competent person</h3>
+        <label htmlFor="person-name">Name<input id="person-name" value={personName} onChange={(event) => setPersonName(event.target.value)} /></label>
+        <label htmlFor="designation">Designation<input id="designation" value={designation} onChange={(event) => setDesignation(event.target.value)} /></label>
+        <button className="secondary" disabled={!activeEngagement || !evidenceSourceId || !personName || !designation}>Record evidence</button>
+      </form>
+    </section>
+  );
+}
+
 function authorityLabel(value: AuthorityClassification): string {
   return authorityOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function statusLabel(value: ReadinessStatus): string {
+  return readinessStatusOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function readinessLabel(value: ContractorReadinessSummary["overallStatus"]): string {
+  if (value === "not_started") return "Not started";
+  if (value === "in_progress") return "In progress";
+  if (value === "attention_required") return "Attention required";
+  return "Ready";
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type {
   Contractor,
+  CompetentPersonCreateInput,
+  CompetentPersonEvidence,
+  ContractorReadinessDetail,
+  ContractorReadinessSummary,
+  ContractorRequirementApplyInput,
+  ContractorRequirementStatus,
+  ContractorRequirementUpdateInput,
   ContractorCreateInput,
   EngagementCreateInput,
   Project,
@@ -9,13 +16,30 @@ import type {
   ProjectSourceActivationInput,
   ProjectSourceInput,
   ProjectSourceLink,
+  ReadinessAuditEvent,
+  ReadinessEvidence,
+  ReadinessEvidenceCreateInput,
+  ReadinessEvidenceReviewInput,
+  ReadinessRequirement,
+  ReadinessRequirementCreateInput,
+  ReadinessRequirementUpdateInput,
+  ReadinessStatus,
+  SafetyMetric,
+  SafetyMetricCreateInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
   SourceSearchInput,
   SourceUpdateInput
 } from "../../shared/contracts";
-import { DuplicateEngagementError, DuplicateProjectSourceError, type AppStore, type StoredUser } from "../store";
+import {
+  DuplicateEngagementError,
+  DuplicateEvidenceAssociationError,
+  DuplicateProjectSourceError,
+  DuplicateRequirementApplicationError,
+  type AppStore,
+  type StoredUser
+} from "../store";
 
 function now(): string {
   return new Date().toISOString();
@@ -34,6 +58,12 @@ export class MemoryStore implements AppStore {
   private sources = new Map<string, SourceRecord>();
   private chunks = new Map<string, SourceChunk[]>();
   private projectSources = new Map<string, ProjectSourceLink>();
+  private readinessRequirements = new Map<string, ReadinessRequirement>();
+  private requirementStatuses = new Map<string, ContractorRequirementStatus>();
+  private readinessEvidence = new Map<string, ReadinessEvidence>();
+  private safetyMetrics = new Map<string, SafetyMetric>();
+  private competentPersons = new Map<string, CompetentPersonEvidence>();
+  private auditEvents: ReadinessAuditEvent[] = [];
 
   async migrate(): Promise<void> {}
 
@@ -304,5 +334,316 @@ export class MemoryStore implements AppStore {
       .filter((chunk) => sourceIds.has(chunk.sourceId))
       .filter((chunk) => !query || chunk.text.toLowerCase().includes(query))
       .slice(0, 50);
+  }
+
+  async listReadinessRequirements(userId: string, projectId: string): Promise<ReadinessRequirement[]> {
+    if (!(await this.getProject(userId, projectId))) return [];
+    return [...this.readinessRequirements.values()].filter((requirement) => requirement.projectId === projectId);
+  }
+
+  async createReadinessRequirement(userId: string, projectId: string, input: ReadinessRequirementCreateInput): Promise<ReadinessRequirement> {
+    if (!(await this.getProject(userId, projectId))) throw new Error("Project not found");
+    if (input.sourceId && !(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const timestamp = now();
+    const requirement: ReadinessRequirement = {
+      id: randomUUID(),
+      projectId,
+      title: input.title.trim(),
+      description: clean(input.description),
+      category: input.category?.trim() || "Other",
+      sourceId: clean(input.sourceId),
+      sourceChunkId: clean(input.sourceChunkId),
+      citationLabel: clean(input.citationLabel),
+      required: input.required,
+      blocking: input.blocking,
+      dueDate: clean(input.dueDate),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.readinessRequirements.set(requirement.id, requirement);
+    return requirement;
+  }
+
+  async updateReadinessRequirement(
+    userId: string,
+    projectId: string,
+    requirementId: string,
+    input: ReadinessRequirementUpdateInput
+  ): Promise<ReadinessRequirement | null> {
+    if (!(await this.getProject(userId, projectId))) return null;
+    const current = this.readinessRequirements.get(requirementId);
+    if (!current || current.projectId !== projectId) return null;
+    const updated: ReadinessRequirement = {
+      ...current,
+      title: input.title ?? current.title,
+      description: input.description === undefined ? current.description : clean(input.description),
+      category: input.category ?? current.category,
+      sourceId: input.sourceId === undefined ? current.sourceId : clean(input.sourceId),
+      sourceChunkId: input.sourceChunkId === undefined ? current.sourceChunkId : clean(input.sourceChunkId),
+      citationLabel: input.citationLabel === undefined ? current.citationLabel : clean(input.citationLabel),
+      required: input.required ?? current.required,
+      blocking: input.blocking ?? current.blocking,
+      dueDate: input.dueDate === undefined ? current.dueDate : clean(input.dueDate),
+      updatedAt: now()
+    };
+    this.readinessRequirements.set(requirementId, updated);
+    return updated;
+  }
+
+  async applyRequirementToEngagement(
+    userId: string,
+    engagementId: string,
+    input: ContractorRequirementApplyInput
+  ): Promise<ContractorRequirementStatus> {
+    const engagement = await this.getEngagementForUser(userId, engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    const requirement = this.readinessRequirements.get(input.requirementId);
+    if (!requirement || requirement.projectId !== engagement.projectId) throw new Error("Readiness requirement not found");
+    const duplicate = [...this.requirementStatuses.values()].find(
+      (status) => status.engagementId === engagementId && status.requirementId === input.requirementId
+    );
+    if (duplicate) throw new DuplicateRequirementApplicationError();
+    const timestamp = now();
+    const status: ContractorRequirementStatus = {
+      id: randomUUID(),
+      requirementId: input.requirementId,
+      engagementId,
+      status: requirement.required ? "required" : "not_applicable",
+      reviewerNotes: null,
+      plannedMobilizationDate: null,
+      reviewedAt: null,
+      reviewedByUserId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      requirement
+    };
+    this.requirementStatuses.set(status.id, status);
+    this.addAudit(userId, engagementId, status.id, null, "requirement_applied", `Applied requirement: ${requirement.title}`);
+    return status;
+  }
+
+  async listContractorRequirementStatuses(userId: string, engagementId: string): Promise<ContractorRequirementStatus[]> {
+    if (!(await this.getEngagementForUser(userId, engagementId))) return [];
+    return [...this.requirementStatuses.values()]
+      .filter((status) => status.engagementId === engagementId)
+      .map((status) => ({ ...status, requirement: this.readinessRequirements.get(status.requirementId) }));
+  }
+
+  async updateContractorRequirementStatus(
+    userId: string,
+    statusId: string,
+    input: ContractorRequirementUpdateInput
+  ): Promise<ContractorRequirementStatus | null> {
+    const current = this.requirementStatuses.get(statusId);
+    if (!current || !(await this.getEngagementForUser(userId, current.engagementId))) return null;
+    const reviewed = input.status && ["accepted", "rejected", "expired", "not_applicable", "replacement_requested"].includes(input.status);
+    const updated: ContractorRequirementStatus = {
+      ...current,
+      status: input.status ?? current.status,
+      reviewerNotes: input.reviewerNotes === undefined ? current.reviewerNotes : clean(input.reviewerNotes),
+      plannedMobilizationDate: input.plannedMobilizationDate === undefined ? current.plannedMobilizationDate : clean(input.plannedMobilizationDate),
+      reviewedAt: reviewed ? now() : current.reviewedAt,
+      reviewedByUserId: reviewed ? userId : current.reviewedByUserId,
+      updatedAt: now(),
+      requirement: this.readinessRequirements.get(current.requirementId)
+    };
+    this.requirementStatuses.set(statusId, updated);
+    this.addAudit(userId, updated.engagementId, statusId, null, "status_changed", `Requirement status changed to ${updated.status}`);
+    return updated;
+  }
+
+  async attachReadinessEvidence(userId: string, input: ReadinessEvidenceCreateInput): Promise<ReadinessEvidence> {
+    const status = this.requirementStatuses.get(input.requirementStatusId);
+    if (!status || !(await this.getEngagementForUser(userId, status.engagementId))) throw new Error("Requirement status not found");
+    if (!(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const duplicate = [...this.readinessEvidence.values()].find(
+      (evidence) => evidence.requirementStatusId === input.requirementStatusId && evidence.sourceId === input.sourceId
+    );
+    if (duplicate) throw new DuplicateEvidenceAssociationError();
+    const timestamp = now();
+    const evidence: ReadinessEvidence = {
+      id: randomUUID(),
+      requirementStatusId: input.requirementStatusId,
+      sourceId: input.sourceId,
+      sourceChunkId: clean(input.sourceChunkId),
+      evidenceRole: input.evidenceRole,
+      reviewStatus: "needs_review",
+      extractedMetadata: input.extractedMetadata,
+      reviewerConfirmedMetadata: {},
+      reviewerNotes: clean(input.reviewerNotes),
+      reviewedAt: null,
+      reviewedByUserId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      source: this.sources.get(input.sourceId)
+    };
+    this.readinessEvidence.set(evidence.id, evidence);
+    await this.updateContractorRequirementStatus(userId, status.id, { status: "received" });
+    this.addAudit(userId, status.engagementId, status.id, evidence.id, "evidence_received", "Evidence attached; review still required");
+    return evidence;
+  }
+
+  async reviewReadinessEvidence(userId: string, evidenceId: string, input: ReadinessEvidenceReviewInput): Promise<ReadinessEvidence | null> {
+    const current = this.readinessEvidence.get(evidenceId);
+    if (!current) return null;
+    const status = this.requirementStatuses.get(current.requirementStatusId);
+    if (!status || !(await this.getEngagementForUser(userId, status.engagementId))) return null;
+    const updated: ReadinessEvidence = {
+      ...current,
+      reviewStatus: input.reviewStatus,
+      reviewerNotes: input.reviewerNotes === undefined ? current.reviewerNotes : clean(input.reviewerNotes),
+      reviewedAt: now(),
+      reviewedByUserId: userId,
+      updatedAt: now(),
+      source: this.sources.get(current.sourceId)
+    };
+    this.readinessEvidence.set(evidenceId, updated);
+    await this.updateContractorRequirementStatus(userId, status.id, { status: input.reviewStatus });
+    this.addAudit(userId, status.engagementId, status.id, evidenceId, "evidence_reviewed", `Evidence marked ${input.reviewStatus}`);
+    return updated;
+  }
+
+  async createSafetyMetric(userId: string, input: SafetyMetricCreateInput): Promise<SafetyMetric> {
+    const engagement = await this.getEngagementForUser(userId, input.engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    if (!(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const timestamp = now();
+    const metric: SafetyMetric = {
+      id: randomUUID(),
+      contractorId: engagement.contractorId,
+      engagementId: engagement.id,
+      metricType: input.metricType,
+      metricName: clean(input.metricName),
+      periodYear: input.periodYear,
+      value: input.value,
+      sourceId: input.sourceId,
+      evidenceId: clean(input.evidenceId),
+      reviewStatus: input.reviewStatus,
+      reviewerNotes: clean(input.reviewerNotes),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.safetyMetrics.set(metric.id, metric);
+    this.addAudit(userId, engagement.id, null, metric.evidenceId, "metric_recorded", `Recorded ${metric.metricType.toUpperCase()} ${metric.periodYear}`);
+    return metric;
+  }
+
+  async createCompetentPersonEvidence(userId: string, input: CompetentPersonCreateInput): Promise<CompetentPersonEvidence> {
+    const engagement = await this.getEngagementForUser(userId, input.engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    if (!(await this.getSource(userId, input.authorizationSourceId))) throw new Error("Source not found");
+    const timestamp = now();
+    const record: CompetentPersonEvidence = {
+      id: randomUUID(),
+      engagementId: engagement.id,
+      contractorId: engagement.contractorId,
+      personName: input.personName,
+      designation: input.designation,
+      authorizationSourceId: input.authorizationSourceId,
+      trainingSourceId: clean(input.trainingSourceId),
+      effectiveDate: clean(input.effectiveDate),
+      expirationDate: clean(input.expirationDate),
+      reviewStatus: input.reviewStatus,
+      reviewerNotes: clean(input.reviewerNotes),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.competentPersons.set(record.id, record);
+    this.addAudit(userId, engagement.id, null, null, "competent_person_recorded", `${record.personName} - ${record.designation}`);
+    return record;
+  }
+
+  async getContractorReadiness(
+    userId: string,
+    engagementId: string,
+    filters: { status?: string; category?: string } = {}
+  ): Promise<ContractorReadinessDetail | null> {
+    const engagement = await this.getEngagementForUser(userId, engagementId);
+    if (!engagement) return null;
+    let requirements = await this.listContractorRequirementStatuses(userId, engagementId);
+    if (filters.status) requirements = requirements.filter((status) => status.status === filters.status);
+    if (filters.category) requirements = requirements.filter((status) => status.requirement?.category === filters.category);
+    const statusIds = new Set(requirements.map((status) => status.id));
+    const evidence = [...this.readinessEvidence.values()]
+      .filter((item) => statusIds.has(item.requirementStatusId))
+      .map((item) => ({ ...item, source: this.sources.get(item.sourceId) }));
+    const metrics = [...this.safetyMetrics.values()].filter((metric) => metric.engagementId === engagementId);
+    const competentPersons = [...this.competentPersons.values()].filter((record) => record.engagementId === engagementId);
+    const auditEvents = this.auditEvents.filter((event) => event.engagementId === engagementId).slice(-100).reverse();
+    return { summary: this.summarizeReadiness(engagement, await this.listContractorRequirementStatuses(userId, engagementId)), requirements, evidence, metrics, competentPersons, auditEvents };
+  }
+
+  async listProjectReadinessSummaries(userId: string, projectId: string): Promise<ContractorReadinessSummary[]> {
+    if (!(await this.getProject(userId, projectId))) return [];
+    const engagements = [...this.engagements.values()].filter((engagement) => engagement.projectId === projectId);
+    const summaries: ContractorReadinessSummary[] = [];
+    for (const engagement of engagements) {
+      summaries.push(this.summarizeReadiness(engagement, await this.listContractorRequirementStatuses(userId, engagement.id)));
+    }
+    return summaries;
+  }
+
+  private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
+    const engagement = this.engagements.get(engagementId);
+    if (!engagement || !(await this.getProject(userId, engagement.projectId))) return null;
+    return engagement;
+  }
+
+  private summarizeReadiness(
+    engagement: ProjectContractorEngagement,
+    statuses: ContractorRequirementStatus[]
+  ): ContractorReadinessSummary {
+    const required = statuses.filter((status) => status.requirement?.required !== false && status.requirement?.blocking !== false);
+    const accepted = required.filter((status) => status.status === "accepted").length;
+    const notApplicable = required.filter((status) => status.status === "not_applicable").length;
+    const missingStatuses: ReadinessStatus[] = ["required", "requested"];
+    const missing = required.filter((status) => missingStatuses.includes(status.status)).length;
+    const needsReview = required.filter((status) => ["received", "needs_review"].includes(status.status)).length;
+    const rejectedOrExpired = required.filter((status) => ["rejected", "expired", "replacement_requested"].includes(status.status)).length;
+    const timingWarnings = required
+      .filter((status) => status.plannedMobilizationDate && !["accepted", "not_applicable"].includes(status.status))
+      .map((status) => `${status.requirement?.title ?? "Requirement"} unresolved before ${status.plannedMobilizationDate}`);
+    const totalRequired = required.length;
+    const overallStatus =
+      totalRequired === 0
+        ? "not_started"
+        : rejectedOrExpired > 0
+          ? "attention_required"
+          : accepted + notApplicable === totalRequired
+            ? "ready"
+            : "in_progress";
+    return {
+      engagementId: engagement.id,
+      contractorId: engagement.contractorId,
+      overallStatus,
+      totalRequired,
+      accepted,
+      notApplicable,
+      missing,
+      needsReview,
+      rejectedOrExpired,
+      outstandingItems: required.filter((status) => !["accepted", "not_applicable"].includes(status.status)).map((status) => status.requirement?.title ?? "Requirement"),
+      timingWarnings
+    };
+  }
+
+  private addAudit(
+    userId: string,
+    engagementId: string,
+    requirementStatusId: string | null,
+    evidenceId: string | null,
+    eventType: string,
+    message: string
+  ) {
+    this.auditEvents.push({
+      id: randomUUID(),
+      engagementId,
+      requirementStatusId,
+      evidenceId,
+      eventType,
+      message,
+      actorUserId: userId,
+      createdAt: now()
+    });
   }
 }

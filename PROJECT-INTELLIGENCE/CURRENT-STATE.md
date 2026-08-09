@@ -6,13 +6,15 @@ Status date: 2026-08-09
 
 - Product doctrine remains approved as V1 governing direction.
 - Phase 1 foundation implementation is complete.
-- Phase 2 source intelligence foundation has been implemented for review and remains limited to the approved source-intelligence scope.
+- Phase 2 source intelligence foundation is formally complete and remains limited to the approved source-intelligence scope.
+- Phase 3 contractor readiness is implemented for review and remains limited to the approved readiness scope.
 - GitHub repository `https://github.com/jerrsapps1/PRODUCT-INTELLIGENCE-SWA.git` on branch `main` is established as the implementation source of truth.
 - Local project root is `C:\dev2\PRODUCT-INTELLIGENCE-SWA`; no nested Git repository remains.
 - The repository now contains a TypeScript full-stack application foundation with a React responsive/PWA client and Node HTTP API.
 - PostgreSQL is the production structured persistence target; browser localStorage is not used as source-of-truth persistence.
 - The initial schema distinguishes users, projects, contractor master records, sessions, and project-contractor engagements.
 - The source model distinguishes source records, original storage references, extracted chunks, and project-source activation links.
+- The readiness model distinguishes project-level requirements from contractor-specific engagement statuses and evidence reviews.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1
@@ -40,9 +42,22 @@ Status date: 2026-08-09
 - Explicit project source association and active/controlling status.
 - Source detail/preview fallback UI with original-file access.
 
+## Implemented in Phase 3
+
+- Project-level contractor-readiness requirements with optional source/citation provenance.
+- Engagement-level readiness statuses using the full required/requested/received/reviewed lifecycle.
+- Evidence attachment from existing source records without duplicating original files or extracted chunks.
+- Human evidence review where received evidence does not automatically become accepted.
+- Duplicate applied-requirement and duplicate evidence-association protection.
+- Planned mobilization date warnings for unresolved blocking requirements.
+- Project readiness summaries for contractor engagements.
+- EMR, TRIR, DART, and other safety metric capture with source provenance.
+- Competent person evidence records tied to project-contractor engagements.
+- Readiness audit events and responsive readiness workspace controls.
+
 ## Not implemented by design
 
-- Embeddings, vector search, general crawling, readiness workflows, plan review, observations, incidents, corrective actions, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
+- Embeddings, vector search, general crawling, safety plan review, observations, incidents, corrective actions, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
 - Production object-storage provider integration. The abstraction exists; hosted object storage must be configured for production.
 - Provider-specific AI integrations. Phase 2 does not create fake AI output.
 
@@ -55,4 +70,4 @@ Status date: 2026-08-09
 
 ## Current constraint
 
-Do not begin Phase 2 until Phase 1 is reviewed and accepted.
+Phase 3 Contractor Readiness is implemented for review. Do not begin Phase 4 Safety Plan Review or any later phase.
