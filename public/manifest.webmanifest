@@ -1,0 +1,9 @@
+{
+  "name": "Project Intelligence",
+  "short_name": "Project Intel",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f3ea",
+  "theme_color": "#22312d",
+  "icons": []
+}

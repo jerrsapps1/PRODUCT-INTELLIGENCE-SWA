@@ -1,0 +1,37 @@
+{
+  "name": "product-intelligence-swa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite --host 127.0.0.1\" \"tsx watch src/server/index.ts\"",
+    "dev:api": "tsx watch src/server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build && esbuild src/server/index.ts --bundle --platform=node --packages=external --format=esm --outfile=dist/server/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "cookie": "^1.0.2",
+    "pg": "^8.13.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitest/ui": "^4.1.10",
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.28.2",
+    "jsdom": "^25.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}
