@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import type {
   CompetentPersonCreateInput,
@@ -26,6 +27,22 @@ import type {
   ReadinessStatus,
   SafetyMetric,
   SafetyMetricCreateInput,
+  SafetyPlan,
+  SafetyPlanCreateInput,
+  SafetyPlanDetail,
+  SafetyPlanRevision,
+  SafetyPlanRevisionCreateInput,
+  PlanApprovalInput,
+  PlanFinding,
+  PlanFindingCreateInput,
+  PlanFindingUpdateInput,
+  PlanRecommendationUpdateInput,
+  PlanReview,
+  PlanReviewReference,
+  PlanReviewRunInput,
+  PlanReviewAuditEvent,
+  ResubmissionComparison,
+  ResubmissionComparisonCreateInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -35,6 +52,7 @@ import type {
 import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
+  DuplicatePlanRevisionSourceError,
   DuplicateProjectSourceError,
   DuplicateRequirementApplicationError,
   type AppStore,
@@ -252,6 +270,124 @@ CREATE INDEX IF NOT EXISTS idx_readiness_evidence_status_id ON readiness_evidenc
 CREATE INDEX IF NOT EXISTS idx_safety_metrics_engagement_id ON safety_metrics(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_competent_person_evidence_engagement_id ON competent_person_evidence(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_readiness_audit_engagement_id ON readiness_audit_events(engagement_id);
+
+CREATE TABLE IF NOT EXISTS safety_plans (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  engagement_id uuid NOT NULL REFERENCES project_contractor_engagements(id) ON DELETE CASCADE,
+  contractor_id uuid NOT NULL REFERENCES contractors(id) ON DELETE RESTRICT,
+  title text NOT NULL,
+  plan_type text NOT NULL,
+  custom_plan_type text,
+  current_revision_id uuid,
+  review_status text NOT NULL CHECK (review_status IN ('pending','approved')) DEFAULT 'pending',
+  approved_at timestamptz,
+  approved_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  reviewer_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS safety_plan_revisions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id uuid NOT NULL REFERENCES safety_plans(id) ON DELETE CASCADE,
+  source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  revision_identifier text NOT NULL,
+  submitted_date date,
+  prior_revision_id uuid REFERENCES safety_plan_revisions(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (plan_id, source_id)
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_safety_plans_current_revision'
+  ) THEN
+    ALTER TABLE safety_plans
+      ADD CONSTRAINT fk_safety_plans_current_revision
+      FOREIGN KEY (current_revision_id) REFERENCES safety_plan_revisions(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS plan_reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id uuid NOT NULL REFERENCES safety_plans(id) ON DELETE CASCADE,
+  revision_id uuid NOT NULL REFERENCES safety_plan_revisions(id) ON DELETE CASCADE,
+  status text NOT NULL CHECK (status IN ('pending','approved')) DEFAULT 'pending',
+  assistant_provider text,
+  assistant_model text,
+  processing_status text NOT NULL CHECK (processing_status IN ('draft','running','completed','failed','partial')) DEFAULT 'draft',
+  error_state text,
+  prompt_config_version text,
+  contractor_facing_summary text NOT NULL DEFAULT '',
+  internal_reviewer_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS plan_review_references (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  review_id uuid NOT NULL REFERENCES plan_reviews(id) ON DELETE CASCADE,
+  source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  source_chunk_id uuid REFERENCES source_chunks(id) ON DELETE SET NULL,
+  authority_classification text NOT NULL,
+  citation_label text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS plan_findings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  review_id uuid NOT NULL REFERENCES plan_reviews(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  finding_type text NOT NULL CHECK (finding_type IN ('compliant','revision_recommended','deficiency','conflict','reviewer_decision')),
+  authority text NOT NULL CHECK (authority IN ('regulatory_requirement','project_requirement','recommendation','reviewer_decision')),
+  plan_source_id uuid REFERENCES sources(id) ON DELETE SET NULL,
+  plan_source_chunk_id uuid REFERENCES source_chunks(id) ON DELETE SET NULL,
+  reference_source_id uuid REFERENCES sources(id) ON DELETE SET NULL,
+  reference_source_chunk_id uuid REFERENCES source_chunks(id) ON DELETE SET NULL,
+  reference_citation_label text,
+  ai_explanation text,
+  reviewer_explanation text,
+  reviewer_notes text,
+  contractor_facing_recommendation text,
+  recommended_revision_text text,
+  reviewer_decision text,
+  resolved boolean NOT NULL DEFAULT false,
+  not_applicable boolean NOT NULL DEFAULT false,
+  origin text NOT NULL CHECK (origin IN ('assistant','reviewer')),
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS plan_resubmission_comparisons (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id uuid NOT NULL REFERENCES safety_plans(id) ON DELETE CASCADE,
+  prior_revision_id uuid NOT NULL REFERENCES safety_plan_revisions(id) ON DELETE CASCADE,
+  new_revision_id uuid NOT NULL REFERENCES safety_plan_revisions(id) ON DELETE CASCADE,
+  finding_id uuid NOT NULL REFERENCES plan_findings(id) ON DELETE CASCADE,
+  resolution_status text NOT NULL CHECK (resolution_status IN ('addressed','partially_addressed','unresolved','reviewer_decision')),
+  reviewer_notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS plan_review_audit_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  plan_id uuid NOT NULL REFERENCES safety_plans(id) ON DELETE CASCADE,
+  review_id uuid REFERENCES plan_reviews(id) ON DELETE SET NULL,
+  event_type text NOT NULL,
+  message text NOT NULL,
+  actor_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_safety_plans_engagement_id ON safety_plans(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_safety_plan_revisions_plan_id ON safety_plan_revisions(plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_reviews_plan_id ON plan_reviews(plan_id);
+CREATE INDEX IF NOT EXISTS idx_plan_review_references_review_id ON plan_review_references(review_id);
+CREATE INDEX IF NOT EXISTS idx_plan_findings_review_id ON plan_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_plan_review_audit_events_plan_id ON plan_review_audit_events(plan_id);
 `;
 
 function clean(value: string | undefined): string | null {
@@ -461,6 +597,121 @@ function mapAuditEvent(row: Record<string, unknown>): ReadinessAuditEvent {
     engagementId: String(row.engagement_id),
     requirementStatusId: row.requirement_status_id ? String(row.requirement_status_id) : null,
     evidenceId: row.evidence_id ? String(row.evidence_id) : null,
+    eventType: String(row.event_type),
+    message: String(row.message),
+    actorUserId: String(row.actor_user_id),
+    createdAt: new Date(row.created_at as string).toISOString()
+  };
+}
+
+function mapSafetyPlan(row: Record<string, unknown>): SafetyPlan {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    engagementId: String(row.engagement_id),
+    contractorId: String(row.contractor_id),
+    title: String(row.title),
+    planType: row.plan_type as SafetyPlan["planType"],
+    customPlanType: row.custom_plan_type ? String(row.custom_plan_type) : null,
+    currentRevisionId: row.current_revision_id ? String(row.current_revision_id) : null,
+    reviewStatus: row.review_status as SafetyPlan["reviewStatus"],
+    approvedAt: row.approved_at ? new Date(row.approved_at as string).toISOString() : null,
+    approvedByUserId: row.approved_by_user_id ? String(row.approved_by_user_id) : null,
+    reviewerNotes: row.reviewer_notes ? String(row.reviewer_notes) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapSafetyPlanRevision(row: Record<string, unknown>, source?: SourceRecord): SafetyPlanRevision {
+  return {
+    id: String(row.id),
+    planId: String(row.plan_id),
+    sourceId: String(row.source_id),
+    revisionIdentifier: String(row.revision_identifier),
+    submittedDate: toIsoDate(row.submitted_date as Date | string | null),
+    priorRevisionId: row.prior_revision_id ? String(row.prior_revision_id) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    source
+  };
+}
+
+function mapPlanReview(row: Record<string, unknown>): PlanReview {
+  return {
+    id: String(row.id),
+    planId: String(row.plan_id),
+    revisionId: String(row.revision_id),
+    status: row.status as PlanReview["status"],
+    assistantProvider: row.assistant_provider ? String(row.assistant_provider) : null,
+    assistantModel: row.assistant_model ? String(row.assistant_model) : null,
+    processingStatus: row.processing_status as PlanReview["processingStatus"],
+    errorState: row.error_state ? String(row.error_state) : null,
+    promptConfigVersion: row.prompt_config_version ? String(row.prompt_config_version) : null,
+    contractorFacingSummary: String(row.contractor_facing_summary ?? ""),
+    internalReviewerNotes: row.internal_reviewer_notes ? String(row.internal_reviewer_notes) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapPlanReference(row: Record<string, unknown>, source?: SourceRecord): PlanReviewReference {
+  return {
+    id: String(row.id),
+    reviewId: String(row.review_id),
+    sourceId: String(row.source_id),
+    sourceChunkId: row.source_chunk_id ? String(row.source_chunk_id) : null,
+    authorityClassification: row.authority_classification as PlanReviewReference["authorityClassification"],
+    citationLabel: row.citation_label ? String(row.citation_label) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    source
+  };
+}
+
+function mapPlanFinding(row: Record<string, unknown>): PlanFinding {
+  return {
+    id: String(row.id),
+    reviewId: String(row.review_id),
+    title: String(row.title),
+    findingType: row.finding_type as PlanFinding["findingType"],
+    authority: row.authority as PlanFinding["authority"],
+    planSourceId: row.plan_source_id ? String(row.plan_source_id) : null,
+    planSourceChunkId: row.plan_source_chunk_id ? String(row.plan_source_chunk_id) : null,
+    referenceSourceId: row.reference_source_id ? String(row.reference_source_id) : null,
+    referenceSourceChunkId: row.reference_source_chunk_id ? String(row.reference_source_chunk_id) : null,
+    referenceCitationLabel: row.reference_citation_label ? String(row.reference_citation_label) : null,
+    aiExplanation: row.ai_explanation ? String(row.ai_explanation) : null,
+    reviewerExplanation: row.reviewer_explanation ? String(row.reviewer_explanation) : null,
+    reviewerNotes: row.reviewer_notes ? String(row.reviewer_notes) : null,
+    contractorFacingRecommendation: row.contractor_facing_recommendation ? String(row.contractor_facing_recommendation) : null,
+    recommendedRevisionText: row.recommended_revision_text ? String(row.recommended_revision_text) : null,
+    reviewerDecision: row.reviewer_decision ? String(row.reviewer_decision) : null,
+    resolved: Boolean(row.resolved),
+    notApplicable: Boolean(row.not_applicable),
+    origin: row.origin as PlanFinding["origin"],
+    sortOrder: Number(row.sort_order),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapComparison(row: Record<string, unknown>): ResubmissionComparison {
+  return {
+    id: String(row.id),
+    planId: String(row.plan_id),
+    priorRevisionId: String(row.prior_revision_id),
+    newRevisionId: String(row.new_revision_id),
+    findingId: String(row.finding_id),
+    resolutionStatus: row.resolution_status as ResubmissionComparison["resolutionStatus"],
+    reviewerNotes: row.reviewer_notes ? String(row.reviewer_notes) : null,
+    createdAt: new Date(row.created_at as string).toISOString()
+  };
+}
+
+function mapPlanAuditEvent(row: Record<string, unknown>): PlanReviewAuditEvent {
+  return {
+    id: String(row.id),
+    planId: String(row.plan_id),
+    reviewId: row.review_id ? String(row.review_id) : null,
     eventType: String(row.event_type),
     message: String(row.message),
     actorUserId: String(row.actor_user_id),
@@ -1186,6 +1437,218 @@ export class PostgresStore implements AppStore {
     return summaries;
   }
 
+  async listSafetyPlans(userId: string, engagementId: string): Promise<SafetyPlan[]> {
+    const engagement = await this.getEngagementForUser(userId, engagementId);
+    if (!engagement) return [];
+    const result = await this.pool.query("SELECT * FROM safety_plans WHERE engagement_id = $1 ORDER BY created_at DESC", [engagementId]);
+    return result.rows.map(mapSafetyPlan);
+  }
+
+  async createSafetyPlan(userId: string, input: SafetyPlanCreateInput): Promise<SafetyPlanDetail> {
+    const engagement = await this.getEngagementForUser(userId, input.engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    if (!(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const planResult = await this.pool.query(
+      `INSERT INTO safety_plans (project_id, engagement_id, contractor_id, title, plan_type, custom_plan_type, reviewer_notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [engagement.projectId, engagement.id, engagement.contractorId, input.title.trim(), input.planType, clean(input.customPlanType), clean(input.reviewerNotes)]
+    );
+    const plan = mapSafetyPlan(planResult.rows[0]);
+    const revision = await this.insertPlanRevision(plan.id, input.sourceId, input.revisionIdentifier ?? "Rev 0", input.submittedDate, input.priorRevisionId);
+    await this.pool.query("UPDATE safety_plans SET current_revision_id = $2, updated_at = now() WHERE id = $1", [plan.id, revision.id]);
+    await this.addPlanAudit(userId, plan.id, null, "plan_created", `Created plan ${plan.title} ${revision.revisionIdentifier}`);
+    return (await this.getSafetyPlanDetail(userId, plan.id)) as SafetyPlanDetail;
+  }
+
+  async createSafetyPlanRevision(userId: string, planId: string, input: SafetyPlanRevisionCreateInput): Promise<SafetyPlanDetail | null> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan) return null;
+    if (!(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    try {
+      const revision = await this.insertPlanRevision(planId, input.sourceId, input.revisionIdentifier, input.submittedDate, input.priorRevisionId);
+      await this.pool.query(
+        `UPDATE safety_plans
+         SET current_revision_id = $2, review_status = 'pending', approved_at = NULL, approved_by_user_id = NULL, updated_at = now()
+         WHERE id = $1`,
+        [planId, revision.id]
+      );
+      await this.addPlanAudit(userId, planId, null, "revision_received", `Received ${revision.revisionIdentifier}`);
+      return this.getSafetyPlanDetail(userId, planId);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicatePlanRevisionSourceError();
+      throw error;
+    }
+  }
+
+  async getSafetyPlanDetail(userId: string, planId: string): Promise<SafetyPlanDetail | null> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan) return null;
+    const revisionRows = await this.pool.query("SELECT * FROM safety_plan_revisions WHERE plan_id = $1 ORDER BY created_at", [planId]);
+    const revisions: SafetyPlanRevision[] = [];
+    for (const row of revisionRows.rows) {
+      revisions.push(mapSafetyPlanRevision(row, (await this.getSource(userId, row.source_id)) ?? undefined));
+    }
+    const reviewResult = plan.currentRevisionId
+      ? await this.pool.query("SELECT * FROM plan_reviews WHERE revision_id = $1 ORDER BY created_at DESC LIMIT 1", [plan.currentRevisionId])
+      : { rows: [] };
+    const review = reviewResult.rows[0] ? mapPlanReview(reviewResult.rows[0]) : null;
+    const references: PlanReviewReference[] = [];
+    const findings = review
+      ? (await this.pool.query("SELECT * FROM plan_findings WHERE review_id = $1 ORDER BY sort_order, created_at", [review.id])).rows.map(mapPlanFinding)
+      : [];
+    if (review) {
+      const refRows = await this.pool.query("SELECT * FROM plan_review_references WHERE review_id = $1 ORDER BY created_at", [review.id]);
+      for (const row of refRows.rows) references.push(mapPlanReference(row, (await this.getSource(userId, row.source_id)) ?? undefined));
+    }
+    const comparisons = (await this.pool.query("SELECT * FROM plan_resubmission_comparisons WHERE plan_id = $1 ORDER BY created_at DESC", [planId])).rows.map(mapComparison);
+    const auditEvents = (await this.pool.query("SELECT * FROM plan_review_audit_events WHERE plan_id = $1 ORDER BY created_at DESC LIMIT 100", [planId])).rows.map(mapPlanAuditEvent);
+    return { plan, revisions, review, references, findings, comparisons, auditEvents };
+  }
+
+  async runPlanReview(userId: string, planId: string, input: PlanReviewRunInput): Promise<SafetyPlanDetail> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan || !plan.currentRevisionId) throw new Error("Safety plan not found");
+    const revisionRows = await this.pool.query("SELECT * FROM safety_plan_revisions WHERE id = $1 AND plan_id = $2", [plan.currentRevisionId, planId]);
+    const revision = revisionRows.rows[0] ? mapSafetyPlanRevision(revisionRows.rows[0]) : null;
+    if (!revision) throw new Error("Safety plan revision not found");
+    const planSource = await this.getSource(userId, revision.sourceId);
+    if (!planSource) throw new Error("Source not found");
+    if (planSource.extractionStatus === "failed") throw new Error("Plan extraction failed");
+    const reviewResult = await this.pool.query(
+      `INSERT INTO plan_reviews
+       (plan_id, revision_id, status, assistant_provider, assistant_model, processing_status, prompt_config_version)
+       VALUES ($1, $2, 'pending', 'local-review-assistant', 'transparent-selected-source-v1', 'completed', 'phase4-local-v1')
+       RETURNING *`,
+      [planId, revision.id]
+    );
+    const review = mapPlanReview(reviewResult.rows[0]);
+    const references: PlanReviewReference[] = [];
+    for (const referenceInput of input.selectedReferences) {
+      const source = await this.getSource(userId, referenceInput.sourceId);
+      if (!source) throw new Error("Source not found");
+      await this.ensureSelectableReviewReference(plan.projectId, source);
+      const refResult = await this.pool.query(
+        `INSERT INTO plan_review_references (review_id, source_id, source_chunk_id, authority_classification, citation_label)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [review.id, source.id, clean(referenceInput.sourceChunkId), referenceInput.authorityClassification, clean(referenceInput.citationLabel)]
+      );
+      references.push(mapPlanReference(refResult.rows[0], source));
+    }
+    const findings = this.generateDraftFindings(review, planSource, references);
+    for (const finding of findings) await this.insertPlanFinding(finding);
+    const summary = this.buildRecommendationSummary(plan, findings, references);
+    await this.pool.query("UPDATE plan_reviews SET contractor_facing_summary = $2, updated_at = now() WHERE id = $1", [review.id, summary]);
+    await this.addPlanAudit(userId, planId, review.id, "review_run_completed", `Generated ${findings.length} draft findings from selected sources`);
+    return (await this.getSafetyPlanDetail(userId, planId)) as SafetyPlanDetail;
+  }
+
+  async createPlanFinding(userId: string, input: PlanFindingCreateInput): Promise<PlanFinding> {
+    const review = await this.getReviewForUser(userId, input.reviewId);
+    if (!review) throw new Error("Plan review not found");
+    const finding = this.materializeFinding(input, review.id, "reviewer");
+    await this.insertPlanFinding(finding);
+    await this.addPlanAudit(userId, review.planId, review.id, "finding_created", `Reviewer created finding: ${finding.title}`);
+    return finding;
+  }
+
+  async updatePlanFinding(userId: string, findingId: string, input: PlanFindingUpdateInput): Promise<PlanFinding | null> {
+    const current = await this.getFindingForUser(userId, findingId);
+    if (!current) return null;
+    const result = await this.pool.query(
+      `UPDATE plan_findings
+       SET title = $2, finding_type = $3, authority = $4, plan_source_id = $5, plan_source_chunk_id = $6,
+           reference_source_id = $7, reference_source_chunk_id = $8, reference_citation_label = $9,
+           reviewer_explanation = $10, reviewer_notes = $11, contractor_facing_recommendation = $12,
+           recommended_revision_text = $13, reviewer_decision = $14, resolved = $15, not_applicable = $16,
+           sort_order = $17, updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        findingId,
+        input.title ?? current.title,
+        input.findingType ?? current.findingType,
+        input.authority ?? current.authority,
+        input.planSourceId === undefined ? current.planSourceId : clean(input.planSourceId),
+        input.planSourceChunkId === undefined ? current.planSourceChunkId : clean(input.planSourceChunkId),
+        input.referenceSourceId === undefined ? current.referenceSourceId : clean(input.referenceSourceId),
+        input.referenceSourceChunkId === undefined ? current.referenceSourceChunkId : clean(input.referenceSourceChunkId),
+        input.referenceCitationLabel === undefined ? current.referenceCitationLabel : clean(input.referenceCitationLabel),
+        input.reviewerExplanation === undefined ? current.reviewerExplanation : clean(input.reviewerExplanation),
+        input.reviewerNotes === undefined ? current.reviewerNotes : clean(input.reviewerNotes),
+        input.contractorFacingRecommendation === undefined ? current.contractorFacingRecommendation : clean(input.contractorFacingRecommendation),
+        input.recommendedRevisionText === undefined ? current.recommendedRevisionText : clean(input.recommendedRevisionText),
+        input.reviewerDecision === undefined ? current.reviewerDecision : clean(input.reviewerDecision),
+        input.resolved ?? current.resolved,
+        input.notApplicable ?? current.notApplicable,
+        input.sortOrder ?? current.sortOrder
+      ]
+    );
+    const updated = mapPlanFinding(result.rows[0]);
+    const review = await this.getReviewForUser(userId, updated.reviewId);
+    if (review) await this.addPlanAudit(userId, review.planId, review.id, "finding_edited", `Edited finding: ${updated.title}`);
+    return updated;
+  }
+
+  async deletePlanFinding(userId: string, findingId: string): Promise<void> {
+    const current = await this.getFindingForUser(userId, findingId);
+    if (!current) return;
+    const review = await this.getReviewForUser(userId, current.reviewId);
+    await this.pool.query("DELETE FROM plan_findings WHERE id = $1", [findingId]);
+    if (review) await this.addPlanAudit(userId, review.planId, review.id, "finding_removed", `Removed finding: ${current.title}`);
+  }
+
+  async updatePlanRecommendation(userId: string, reviewId: string, input: PlanRecommendationUpdateInput): Promise<PlanReview | null> {
+    const review = await this.getReviewForUser(userId, reviewId);
+    if (!review) return null;
+    const result = await this.pool.query(
+      `UPDATE plan_reviews
+       SET contractor_facing_summary = $2, internal_reviewer_notes = $3, updated_at = now()
+       WHERE id = $1
+       RETURNING *`,
+      [reviewId, input.contractorFacingSummary, clean(input.internalReviewerNotes)]
+    );
+    await this.addPlanAudit(userId, review.planId, reviewId, "recommendation_edited", "Edited contractor-facing recommendation artifact");
+    return mapPlanReview(result.rows[0]);
+  }
+
+  async updatePlanApproval(userId: string, planId: string, input: PlanApprovalInput): Promise<SafetyPlanDetail | null> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan) return null;
+    const approved = input.status === "approved";
+    await this.pool.query(
+      `UPDATE safety_plans
+       SET review_status = $2, approved_at = CASE WHEN $3::boolean THEN now() ELSE NULL END,
+           approved_by_user_id = CASE WHEN $3::boolean THEN $4 ELSE NULL END,
+           reviewer_notes = $5, updated_at = now()
+       WHERE id = $1`,
+      [planId, input.status, approved, userId, clean(input.reviewerNotes) ?? plan.reviewerNotes]
+    );
+    if (plan.currentRevisionId) {
+      await this.pool.query("UPDATE plan_reviews SET status = $2, updated_at = now() WHERE revision_id = $1", [plan.currentRevisionId, input.status]);
+    }
+    await this.addPlanAudit(userId, planId, null, approved ? "plan_approved" : "plan_marked_pending", `Reviewer marked plan ${input.status}`);
+    return this.getSafetyPlanDetail(userId, planId);
+  }
+
+  async createResubmissionComparison(userId: string, planId: string, input: ResubmissionComparisonCreateInput): Promise<ResubmissionComparison[]> {
+    if (!(await this.getPlanForUser(userId, planId))) throw new Error("Safety plan not found");
+    const comparisons: ResubmissionComparison[] = [];
+    for (const resolution of input.findingResolutions) {
+      const result = await this.pool.query(
+        `INSERT INTO plan_resubmission_comparisons
+         (plan_id, prior_revision_id, new_revision_id, finding_id, resolution_status, reviewer_notes)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [planId, input.priorRevisionId, input.newRevisionId, resolution.findingId, resolution.resolutionStatus, clean(resolution.reviewerNotes)]
+      );
+      comparisons.push(mapComparison(result.rows[0]));
+    }
+    await this.addPlanAudit(userId, planId, null, "resubmission_compared", `Compared ${input.priorRevisionId} to ${input.newRevisionId}`);
+    return comparisons;
+  }
+
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
     const result = await this.pool.query(
       `SELECT e.*
@@ -1195,6 +1658,206 @@ export class PostgresStore implements AppStore {
       [userId, engagementId]
     );
     return result.rows[0] ? mapEngagement(result.rows[0]) : null;
+  }
+
+  private async getPlanForUser(userId: string, planId: string): Promise<SafetyPlan | null> {
+    const result = await this.pool.query(
+      `SELECT sp.*
+       FROM safety_plans sp
+       JOIN projects p ON p.id = sp.project_id
+       WHERE p.owner_user_id = $1 AND sp.id = $2`,
+      [userId, planId]
+    );
+    return result.rows[0] ? mapSafetyPlan(result.rows[0]) : null;
+  }
+
+  private async getReviewForUser(userId: string, reviewId: string): Promise<PlanReview | null> {
+    const result = await this.pool.query(
+      `SELECT pr.*
+       FROM plan_reviews pr
+       JOIN safety_plans sp ON sp.id = pr.plan_id
+       JOIN projects p ON p.id = sp.project_id
+       WHERE p.owner_user_id = $1 AND pr.id = $2`,
+      [userId, reviewId]
+    );
+    return result.rows[0] ? mapPlanReview(result.rows[0]) : null;
+  }
+
+  private async getFindingForUser(userId: string, findingId: string): Promise<PlanFinding | null> {
+    const result = await this.pool.query(
+      `SELECT pf.*
+       FROM plan_findings pf
+       JOIN plan_reviews pr ON pr.id = pf.review_id
+       JOIN safety_plans sp ON sp.id = pr.plan_id
+       JOIN projects p ON p.id = sp.project_id
+       WHERE p.owner_user_id = $1 AND pf.id = $2`,
+      [userId, findingId]
+    );
+    return result.rows[0] ? mapPlanFinding(result.rows[0]) : null;
+  }
+
+  private async insertPlanRevision(
+    planId: string,
+    sourceId: string,
+    revisionIdentifier: string,
+    submittedDate?: string,
+    priorRevisionId?: string
+  ): Promise<SafetyPlanRevision> {
+    const result = await this.pool.query(
+      `INSERT INTO safety_plan_revisions (plan_id, source_id, revision_identifier, submitted_date, prior_revision_id)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [planId, sourceId, revisionIdentifier.trim(), clean(submittedDate), clean(priorRevisionId)]
+    );
+    return mapSafetyPlanRevision(result.rows[0]);
+  }
+
+  private async ensureSelectableReviewReference(projectId: string, source: SourceRecord): Promise<void> {
+    const result = await this.pool.query(
+      `SELECT 1 FROM project_sources
+       WHERE project_id = $1 AND source_id = $2 AND activation_status = 'active'
+       LIMIT 1`,
+      [projectId, source.id]
+    );
+    if (source.scope === "global" || source.projectId === projectId || result.rows[0]) return;
+    throw new Error("Review source is not available to this project");
+  }
+
+  private generateDraftFindings(review: PlanReview, planSource: SourceDetail, references: PlanReviewReference[]): PlanFinding[] {
+    const planText = planSource.chunks.map((chunk) => chunk.text).join(" ").toLowerCase();
+    const firstPlanChunk = planSource.chunks[0];
+    return references.map((reference, index) => {
+      const referenceChunks = reference.source ? this.chunksFromDetail(reference.source, reference.sourceChunkId) : [];
+      const referenceText = referenceChunks[0]?.text ?? reference.source?.title ?? "Selected reference";
+      const keywords = referenceText.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 4).slice(0, 8);
+      const matched = keywords.some((word) => planText.includes(word));
+      const authority = reference.authorityClassification === "regulatory_requirement" ? "regulatory_requirement" : "project_requirement";
+      return {
+        id: randomUUID(),
+        reviewId: review.id,
+        title: matched ? `Plan addresses ${reference.source?.title ?? "selected reference"}` : `Review needed for ${reference.source?.title ?? "selected reference"}`,
+        findingType: matched ? "compliant" : "deficiency",
+        authority,
+        planSourceId: planSource.id,
+        planSourceChunkId: firstPlanChunk?.id ?? null,
+        referenceSourceId: reference.sourceId,
+        referenceSourceChunkId: reference.sourceChunkId,
+        referenceCitationLabel: reference.citationLabel ?? reference.source?.title ?? null,
+        aiExplanation: matched
+          ? "The submitted plan appears to address language found in the selected reference. Reviewer confirmation is still required."
+          : "The selected reference contains terms that were not clearly found in the submitted plan extraction. This is a draft deficiency for reviewer evaluation.",
+        reviewerExplanation: matched ? "Accepted for reviewer confirmation." : "Clarify or revise the plan to address the selected review source.",
+        reviewerNotes: null,
+        contractorFacingRecommendation: matched ? null : `Revise the plan to address ${reference.source?.title ?? "the selected reference"}.`,
+        recommendedRevisionText: matched ? null : "Add project-specific language describing how this requirement will be met before the work begins.",
+        reviewerDecision: null,
+        resolved: false,
+        notApplicable: false,
+        origin: "assistant",
+        sortOrder: index,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+    });
+  }
+
+  private chunksFromDetail(source: SourceRecord, sourceChunkId: string | null): SourceChunk[] {
+    void source;
+    void sourceChunkId;
+    return [];
+  }
+
+  private materializeFinding(input: PlanFindingCreateInput, reviewId: string, origin: "assistant" | "reviewer"): PlanFinding {
+    const timestamp = new Date().toISOString();
+    return {
+      id: randomUUID(),
+      reviewId,
+      title: input.title.trim(),
+      findingType: input.findingType,
+      authority: input.authority,
+      planSourceId: clean(input.planSourceId),
+      planSourceChunkId: clean(input.planSourceChunkId),
+      referenceSourceId: clean(input.referenceSourceId),
+      referenceSourceChunkId: clean(input.referenceSourceChunkId),
+      referenceCitationLabel: clean(input.referenceCitationLabel),
+      aiExplanation: clean(input.aiExplanation),
+      reviewerExplanation: clean(input.reviewerExplanation),
+      reviewerNotes: clean(input.reviewerNotes),
+      contractorFacingRecommendation: clean(input.contractorFacingRecommendation),
+      recommendedRevisionText: clean(input.recommendedRevisionText),
+      reviewerDecision: clean(input.reviewerDecision),
+      resolved: false,
+      notApplicable: false,
+      origin,
+      sortOrder: input.sortOrder ?? 0,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  private async insertPlanFinding(finding: PlanFinding): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO plan_findings
+       (id, review_id, title, finding_type, authority, plan_source_id, plan_source_chunk_id, reference_source_id,
+        reference_source_chunk_id, reference_citation_label, ai_explanation, reviewer_explanation, reviewer_notes,
+        contractor_facing_recommendation, recommended_revision_text, reviewer_decision, resolved, not_applicable,
+        origin, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+      [
+        finding.id,
+        finding.reviewId,
+        finding.title,
+        finding.findingType,
+        finding.authority,
+        finding.planSourceId,
+        finding.planSourceChunkId,
+        finding.referenceSourceId,
+        finding.referenceSourceChunkId,
+        finding.referenceCitationLabel,
+        finding.aiExplanation,
+        finding.reviewerExplanation,
+        finding.reviewerNotes,
+        finding.contractorFacingRecommendation,
+        finding.recommendedRevisionText,
+        finding.reviewerDecision,
+        finding.resolved,
+        finding.notApplicable,
+        finding.origin,
+        finding.sortOrder
+      ]
+    );
+  }
+
+  private buildRecommendationSummary(plan: SafetyPlan, findings: PlanFinding[], references: PlanReviewReference[]): string {
+    const required = findings.filter((finding) => ["deficiency", "conflict"].includes(finding.findingType));
+    const recommended = findings.filter((finding) => finding.findingType === "revision_recommended");
+    return [
+      `Plan reviewed: ${plan.title}`,
+      `Review basis: ${references.length} selected source${references.length === 1 ? "" : "s"}.`,
+      "",
+      "Required revisions:",
+      ...(required.length ? required.map((finding) => `- ${finding.contractorFacingRecommendation ?? finding.title}`) : ["- None drafted."]),
+      "",
+      "Recommended revisions:",
+      ...(recommended.length ? recommended.map((finding) => `- ${finding.contractorFacingRecommendation ?? finding.title}`) : ["- None drafted."]),
+      "",
+      "Reviewer comments:",
+      "- Pending human review."
+    ].join("\n");
+  }
+
+  private async addPlanAudit(
+    userId: string,
+    planId: string,
+    reviewId: string | null,
+    eventType: string,
+    message: string
+  ): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO plan_review_audit_events (plan_id, review_id, event_type, message, actor_user_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [planId, reviewId, eventType, message, userId]
+    );
   }
 
   private async getRequirementStatusForUser(userId: string, statusId: string): Promise<ContractorRequirementStatus | null> {

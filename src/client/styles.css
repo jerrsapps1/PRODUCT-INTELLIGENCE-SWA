@@ -16,7 +16,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -28,7 +29,8 @@ button {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 44px;
   border: 1px solid #b7beb8;
@@ -36,6 +38,16 @@ select {
   padding: 0.65rem 0.75rem;
   background: #fffdfa;
   color: #1f2d2a;
+}
+
+textarea {
+  min-height: 92px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+select[multiple] {
+  min-height: 132px;
 }
 
 label {
@@ -341,6 +353,36 @@ p {
   background: #fbf0d6;
 }
 
+.plan-review {
+  display: grid;
+  gap: 1rem;
+}
+
+.review-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.review-pane {
+  min-height: 340px;
+  padding: 0.9rem;
+  border: 1px solid #d0d5cf;
+  border-radius: 8px;
+  background: #fffdfa;
+  overflow-wrap: anywhere;
+}
+
+.suggested-text,
+.recommendation-preview {
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: #f0f5f1;
+  color: #263632;
+  white-space: pre-wrap;
+}
+
 .upload-zone {
   padding: 0.75rem;
   border: 1px dashed #87958f;
@@ -405,8 +447,13 @@ a {
   }
 
   .foundation-grid,
-  .project-heading {
+  .project-heading,
+  .review-columns {
     display: grid;
+  }
+
+  .review-columns {
+    grid-template-columns: 1fr;
   }
 
   .metadata-grid {

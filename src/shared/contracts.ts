@@ -28,6 +28,20 @@ export const readinessStatuses = [
 ] as const;
 export const overallReadinessStatuses = ["not_started", "in_progress", "ready", "attention_required"] as const;
 export const safetyMetricTypes = ["emr", "trir", "dart", "other"] as const;
+export const safetyPlanStatuses = ["pending", "approved"] as const;
+export const safetyPlanTypes = [
+  "site_specific_safety_plan",
+  "fall_protection_plan",
+  "excavation_plan",
+  "demolition_plan",
+  "confined_space_plan",
+  "respiratory_protection_plan",
+  "lift_plan",
+  "other"
+] as const;
+export const planFindingTypes = ["compliant", "revision_recommended", "deficiency", "conflict", "reviewer_decision"] as const;
+export const planFindingAuthorities = ["regulatory_requirement", "project_requirement", "recommendation", "reviewer_decision"] as const;
+export const resubmissionResolutionStatuses = ["addressed", "partially_addressed", "unresolved", "reviewer_decision"] as const;
 
 export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, "Project name is required").max(160),
@@ -164,6 +178,80 @@ export const competentPersonCreateSchema = z.object({
   reviewerNotes: z.string().trim().max(2000).optional().or(z.literal(""))
 });
 
+export const safetyPlanCreateSchema = z.object({
+  engagementId: z.string().uuid(),
+  title: z.string().trim().min(1).max(180),
+  planType: z.enum(safetyPlanTypes),
+  customPlanType: z.string().trim().max(120).optional().or(z.literal("")),
+  sourceId: z.string().uuid(),
+  revisionIdentifier: z.string().trim().min(1).max(80).default("Rev 0"),
+  submittedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+  reviewerNotes: z.string().trim().max(4000).optional().or(z.literal("")),
+  priorRevisionId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const safetyPlanRevisionCreateSchema = z.object({
+  sourceId: z.string().uuid(),
+  revisionIdentifier: z.string().trim().min(1).max(80),
+  submittedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+  priorRevisionId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const planReviewReferenceSchema = z.object({
+  sourceId: z.string().uuid(),
+  sourceChunkId: z.string().uuid().optional().or(z.literal("")),
+  authorityClassification: z.enum(authorityClassifications),
+  citationLabel: z.string().trim().max(220).optional().or(z.literal(""))
+});
+
+export const planReviewRunSchema = z.object({
+  selectedReferences: z.array(planReviewReferenceSchema).min(1, "Select at least one review source")
+});
+
+export const planFindingCreateSchema = z.object({
+  reviewId: z.string().uuid(),
+  title: z.string().trim().min(1).max(180),
+  findingType: z.enum(planFindingTypes),
+  authority: z.enum(planFindingAuthorities),
+  planSourceId: z.string().uuid().optional().or(z.literal("")),
+  planSourceChunkId: z.string().uuid().optional().or(z.literal("")),
+  referenceSourceId: z.string().uuid().optional().or(z.literal("")),
+  referenceSourceChunkId: z.string().uuid().optional().or(z.literal("")),
+  referenceCitationLabel: z.string().trim().max(220).optional().or(z.literal("")),
+  aiExplanation: z.string().trim().max(4000).optional().or(z.literal("")),
+  reviewerExplanation: z.string().trim().max(4000).optional().or(z.literal("")),
+  reviewerNotes: z.string().trim().max(4000).optional().or(z.literal("")),
+  contractorFacingRecommendation: z.string().trim().max(4000).optional().or(z.literal("")),
+  recommendedRevisionText: z.string().trim().max(4000).optional().or(z.literal("")),
+  reviewerDecision: z.string().trim().max(2000).optional().or(z.literal("")),
+  sortOrder: z.coerce.number().int().min(0).default(0)
+});
+
+export const planFindingUpdateSchema = planFindingCreateSchema.omit({ reviewId: true }).partial().extend({
+  resolved: z.boolean().optional(),
+  notApplicable: z.boolean().optional()
+});
+
+export const planRecommendationUpdateSchema = z.object({
+  contractorFacingSummary: z.string().trim().max(12000),
+  internalReviewerNotes: z.string().trim().max(12000).optional().or(z.literal(""))
+});
+
+export const planApprovalSchema = z.object({
+  status: z.enum(safetyPlanStatuses),
+  reviewerNotes: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
+export const resubmissionComparisonCreateSchema = z.object({
+  priorRevisionId: z.string().uuid(),
+  newRevisionId: z.string().uuid(),
+  findingResolutions: z.array(z.object({
+    findingId: z.string().uuid(),
+    resolutionStatus: z.enum(resubmissionResolutionStatuses),
+    reviewerNotes: z.string().trim().max(2000).optional().or(z.literal(""))
+  })).default([])
+});
+
 export type FederalClassification = (typeof federalClassifications)[number];
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ContractorCreateInput = z.infer<typeof contractorCreateSchema>;
@@ -183,6 +271,11 @@ export type UrlSourceCreateInput = z.infer<typeof urlSourceCreateSchema>;
 export type ReadinessStatus = (typeof readinessStatuses)[number];
 export type OverallReadinessStatus = (typeof overallReadinessStatuses)[number];
 export type SafetyMetricType = (typeof safetyMetricTypes)[number];
+export type SafetyPlanStatus = (typeof safetyPlanStatuses)[number];
+export type SafetyPlanType = (typeof safetyPlanTypes)[number];
+export type PlanFindingType = (typeof planFindingTypes)[number];
+export type PlanFindingAuthority = (typeof planFindingAuthorities)[number];
+export type ResubmissionResolutionStatus = (typeof resubmissionResolutionStatuses)[number];
 export type ReadinessRequirementCreateInput = z.infer<typeof readinessRequirementCreateSchema>;
 export type ReadinessRequirementUpdateInput = z.infer<typeof readinessRequirementUpdateSchema>;
 export type ContractorRequirementApplyInput = z.infer<typeof contractorRequirementApplySchema>;
@@ -191,6 +284,15 @@ export type ReadinessEvidenceCreateInput = z.infer<typeof readinessEvidenceCreat
 export type ReadinessEvidenceReviewInput = z.infer<typeof readinessEvidenceReviewSchema>;
 export type SafetyMetricCreateInput = z.infer<typeof safetyMetricCreateSchema>;
 export type CompetentPersonCreateInput = z.infer<typeof competentPersonCreateSchema>;
+export type SafetyPlanCreateInput = z.infer<typeof safetyPlanCreateSchema>;
+export type SafetyPlanRevisionCreateInput = z.infer<typeof safetyPlanRevisionCreateSchema>;
+export type PlanReviewReferenceInput = z.infer<typeof planReviewReferenceSchema>;
+export type PlanReviewRunInput = z.infer<typeof planReviewRunSchema>;
+export type PlanFindingCreateInput = z.infer<typeof planFindingCreateSchema>;
+export type PlanFindingUpdateInput = z.infer<typeof planFindingUpdateSchema>;
+export type PlanRecommendationUpdateInput = z.infer<typeof planRecommendationUpdateSchema>;
+export type PlanApprovalInput = z.infer<typeof planApprovalSchema>;
+export type ResubmissionComparisonCreateInput = z.infer<typeof resubmissionComparisonCreateSchema>;
 
 export interface UserSummary {
   id: string;
@@ -395,6 +497,117 @@ export interface ContractorReadinessDetail {
   metrics: SafetyMetric[];
   competentPersons: CompetentPersonEvidence[];
   auditEvents: ReadinessAuditEvent[];
+}
+
+export interface SafetyPlan {
+  id: string;
+  projectId: string;
+  engagementId: string;
+  contractorId: string;
+  title: string;
+  planType: SafetyPlanType;
+  customPlanType: string | null;
+  currentRevisionId: string | null;
+  reviewStatus: SafetyPlanStatus;
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  reviewerNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SafetyPlanRevision {
+  id: string;
+  planId: string;
+  sourceId: string;
+  revisionIdentifier: string;
+  submittedDate: string | null;
+  priorRevisionId: string | null;
+  createdAt: string;
+  source?: SourceRecord;
+}
+
+export interface PlanReviewReference {
+  id: string;
+  reviewId: string;
+  sourceId: string;
+  sourceChunkId: string | null;
+  authorityClassification: AuthorityClassification;
+  citationLabel: string | null;
+  createdAt: string;
+  source?: SourceRecord;
+}
+
+export interface PlanReview {
+  id: string;
+  planId: string;
+  revisionId: string;
+  status: SafetyPlanStatus;
+  assistantProvider: string | null;
+  assistantModel: string | null;
+  processingStatus: "draft" | "running" | "completed" | "failed" | "partial";
+  errorState: string | null;
+  promptConfigVersion: string | null;
+  contractorFacingSummary: string;
+  internalReviewerNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlanFinding {
+  id: string;
+  reviewId: string;
+  title: string;
+  findingType: PlanFindingType;
+  authority: PlanFindingAuthority;
+  planSourceId: string | null;
+  planSourceChunkId: string | null;
+  referenceSourceId: string | null;
+  referenceSourceChunkId: string | null;
+  referenceCitationLabel: string | null;
+  aiExplanation: string | null;
+  reviewerExplanation: string | null;
+  reviewerNotes: string | null;
+  contractorFacingRecommendation: string | null;
+  recommendedRevisionText: string | null;
+  reviewerDecision: string | null;
+  resolved: boolean;
+  notApplicable: boolean;
+  origin: "assistant" | "reviewer";
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResubmissionComparison {
+  id: string;
+  planId: string;
+  priorRevisionId: string;
+  newRevisionId: string;
+  findingId: string;
+  resolutionStatus: ResubmissionResolutionStatus;
+  reviewerNotes: string | null;
+  createdAt: string;
+}
+
+export interface PlanReviewAuditEvent {
+  id: string;
+  planId: string;
+  reviewId: string | null;
+  eventType: string;
+  message: string;
+  actorUserId: string;
+  createdAt: string;
+}
+
+export interface SafetyPlanDetail {
+  plan: SafetyPlan;
+  revisions: SafetyPlanRevision[];
+  review: PlanReview | null;
+  references: PlanReviewReference[];
+  findings: PlanFinding[];
+  comparisons: ResubmissionComparison[];
+  auditEvents: PlanReviewAuditEvent[];
 }
 
 export interface ApiErrorBody {

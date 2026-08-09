@@ -1,6 +1,6 @@
 # Phase 1 Foundation
 
-Status: Closure-ready for review on 2026-08-09
+Status: Formally complete on 2026-08-09
 
 ## Scope delivered
 

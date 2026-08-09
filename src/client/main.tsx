@@ -11,6 +11,12 @@ import type {
   ProjectSourceLink,
   ReadinessRequirement,
   ReadinessStatus,
+  SafetyPlan,
+  SafetyPlanDetail,
+  PlanFinding,
+  PlanFindingAuthority,
+  PlanFindingType,
+  SafetyPlanType,
   SourceDetail,
   SourceRecord,
   SourceScope,
@@ -30,6 +36,32 @@ const readinessStatusOptions: Array<{ value: ReadinessStatus; label: string }> =
   { value: "expired", label: "Expired" },
   { value: "replacement_requested", label: "Replacement requested" },
   { value: "not_applicable", label: "Not applicable" }
+];
+
+const planTypeOptions: Array<{ value: SafetyPlanType; label: string }> = [
+  { value: "site_specific_safety_plan", label: "Site-Specific Safety Plan" },
+  { value: "fall_protection_plan", label: "Fall Protection Plan" },
+  { value: "excavation_plan", label: "Excavation Plan" },
+  { value: "demolition_plan", label: "Demolition Plan" },
+  { value: "confined_space_plan", label: "Confined Space Plan" },
+  { value: "respiratory_protection_plan", label: "Respiratory Protection Plan" },
+  { value: "lift_plan", label: "Lift Plan" },
+  { value: "other", label: "Other" }
+];
+
+const findingTypeOptions: Array<{ value: PlanFindingType; label: string }> = [
+  { value: "compliant", label: "Compliant" },
+  { value: "revision_recommended", label: "Revision recommended" },
+  { value: "deficiency", label: "Deficiency" },
+  { value: "conflict", label: "Conflict" },
+  { value: "reviewer_decision", label: "Reviewer decision" }
+];
+
+const findingAuthorityOptions: Array<{ value: PlanFindingAuthority; label: string }> = [
+  { value: "regulatory_requirement", label: "Regulatory requirement" },
+  { value: "project_requirement", label: "Project requirement" },
+  { value: "recommendation", label: "Recommendation" },
+  { value: "reviewer_decision", label: "Reviewer decision" }
 ];
 
 const authorityOptions: Array<{ value: AuthorityClassification; label: string }> = [
@@ -138,6 +170,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [readinessRequirements, setReadinessRequirements] = useState<ReadinessRequirement[]>([]);
   const [readinessSummaries, setReadinessSummaries] = useState<ContractorReadinessSummary[]>([]);
   const [activeReadiness, setActiveReadiness] = useState<ContractorReadinessDetail | null>(null);
+  const [safetyPlans, setSafetyPlans] = useState<SafetyPlan[]>([]);
+  const [activePlanId, setActivePlanId] = useState<string | null>(null);
+  const [activePlan, setActivePlan] = useState<SafetyPlanDetail | null>(null);
   const [activeView, setActiveView] = useState<View>("workspace");
   const [status, setStatus] = useState("Loading records...");
   const [error, setError] = useState("");
@@ -190,6 +225,27 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     await reloadReadinessRequirements();
   }
 
+  async function reloadSafetyPlans(engagementId = activeEngagementId) {
+    if (!engagementId) {
+      setSafetyPlans([]);
+      setActivePlanId(null);
+      setActivePlan(null);
+      return;
+    }
+    const body = await api<{ plans: SafetyPlan[] }>(`/api/engagements/${engagementId}/safety-plans`);
+    setSafetyPlans(body.plans);
+    setActivePlanId((current) => current ?? body.plans[0]?.id ?? null);
+  }
+
+  async function reloadActivePlan(planId = activePlanId) {
+    if (!planId) {
+      setActivePlan(null);
+      return;
+    }
+    const body = await api<{ safetyPlan: SafetyPlanDetail }>(`/api/safety-plans/${planId}`);
+    setActivePlan(body.safetyPlan);
+  }
+
   async function refreshSourceContext(sourceId = activeSourceId) {
     await loadSources();
     await reloadProjectSources();
@@ -226,6 +282,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setProjectSources([]);
       setReadinessRequirements([]);
       setReadinessSummaries([]);
+      setSafetyPlans([]);
+      setActivePlanId(null);
+      setActivePlan(null);
       return;
     }
     api<{ engagements: ProjectContractorEngagement[] }>(`/api/projects/${selectedProjectId}/contractors`)
@@ -256,7 +315,16 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     reloadActiveReadiness(activeEngagementId).catch((loadError) =>
       setError(loadError instanceof Error ? loadError.message : "Unable to load contractor readiness")
     );
+    reloadSafetyPlans(activeEngagementId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load safety plans")
+    );
   }, [activeEngagementId]);
+
+  useEffect(() => {
+    reloadActivePlan(activePlanId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load plan review")
+    );
+  }, [activePlanId]);
 
   async function logout() {
     await api<void>("/api/auth/logout", { method: "POST" });
@@ -319,6 +387,7 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             activeSource={activeSource}
             readiness={activeReadiness}
             summaries={readinessSummaries}
+            activePlan={activePlan}
           />
         </section>
 
@@ -355,6 +424,23 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             readiness={activeReadiness}
             sources={sources}
             onChanged={reloadActiveReadiness}
+          />
+          <PlanReviewWorkbench
+            activeEngagement={activeEngagement}
+            sources={sources}
+            plans={safetyPlans}
+            activePlan={activePlan}
+            activePlanId={activePlanId}
+            onSelectPlan={setActivePlanId}
+            onChanged={async (planId) => {
+              await reloadSafetyPlans(activeEngagementId);
+              if (planId) {
+                setActivePlanId(planId);
+                await reloadActivePlan(planId);
+              } else {
+                await reloadActivePlan();
+              }
+            }}
           />
         </aside>
       </section>
@@ -470,7 +556,8 @@ function WorkspacePanel({
   activeEngagement,
   activeSource,
   readiness,
-  summaries
+  summaries,
+  activePlan
 }: {
   project: Project | null;
   engagements: ProjectContractorEngagement[];
@@ -478,6 +565,7 @@ function WorkspacePanel({
   activeSource: SourceDetail | null;
   readiness: ContractorReadinessDetail | null;
   summaries: ContractorReadinessSummary[];
+  activePlan: SafetyPlanDetail | null;
 }) {
   if (!project) {
     return <div className="empty-state"><h2>No project open</h2><p>Create or select a blank project from the left panel.</p></div>;
@@ -494,7 +582,9 @@ function WorkspacePanel({
       </div>
       <section className="foundation-grid">
         <div>
-          {activeSource ? (
+          {activePlan ? (
+            <PlanReviewView detail={activePlan} />
+          ) : activeSource ? (
             <SourceDetailView source={activeSource} />
           ) : (
             <>
@@ -518,6 +608,56 @@ function WorkspacePanel({
         </div>
       </section>
     </>
+  );
+}
+
+function PlanReviewView({ detail }: { detail: SafetyPlanDetail }) {
+  const currentRevision = detail.revisions.find((revision) => revision.id === detail.plan.currentRevisionId) ?? detail.revisions[detail.revisions.length - 1];
+  const planText = currentRevision?.source?.title ?? detail.plan.title;
+  const selectedFinding = detail.findings[0] ?? null;
+  const reference = selectedFinding?.referenceSourceId
+    ? detail.references.find((item) => item.sourceId === selectedFinding.referenceSourceId)
+    : detail.references[0];
+  return (
+    <section className="plan-review" aria-labelledby="plan-review-title">
+      <div className="project-heading compact-heading">
+        <div>
+          <p className="eyebrow">{planTypeLabel(detail.plan.planType)}</p>
+          <h3 id="plan-review-title">{detail.plan.title}</h3>
+        </div>
+        <span>{detail.plan.reviewStatus === "approved" ? "Approved" : "Pending"}</span>
+      </div>
+      <div className="review-columns">
+        <article className="review-pane">
+          <p className="eyebrow">Original plan</p>
+          <h4>{currentRevision?.revisionIdentifier ?? "No revision"}</h4>
+          <p>{planText}</p>
+          <p className="empty">Original source remains unchanged; review artifacts are separate.</p>
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">Finding</p>
+          {selectedFinding ? (
+            <>
+              <h4>{selectedFinding.title}</h4>
+              <p><strong>{findingTypeLabel(selectedFinding.findingType)}</strong> - {findingAuthorityLabel(selectedFinding.authority)}</p>
+              <p>{selectedFinding.reviewerExplanation ?? selectedFinding.aiExplanation}</p>
+              {selectedFinding.recommendedRevisionText ? <p className="suggested-text">{selectedFinding.recommendedRevisionText}</p> : null}
+            </>
+          ) : <p className="empty">Run a review or add a finding to begin.</p>}
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">Reference / recommendation</p>
+          <h4>{reference?.source?.title ?? "No selected reference"}</h4>
+          <p>{reference?.citationLabel ?? "Select review sources before running review."}</p>
+          <pre className="recommendation-preview">{detail.review?.contractorFacingSummary || "No recommendation artifact drafted."}</pre>
+        </article>
+      </div>
+      <div className="readiness-strip">
+        <span>{detail.references.length} selected review source{detail.references.length === 1 ? "" : "s"}</span>
+        <span>{detail.findings.length} finding{detail.findings.length === 1 ? "" : "s"}</span>
+        <span>{detail.revisions.length} revision{detail.revisions.length === 1 ? "" : "s"}</span>
+      </div>
+    </section>
   );
 }
 
@@ -1081,6 +1221,234 @@ function ReadinessWorkbench({
   );
 }
 
+function PlanReviewWorkbench({
+  activeEngagement,
+  sources,
+  plans,
+  activePlan,
+  activePlanId,
+  onSelectPlan,
+  onChanged
+}: {
+  activeEngagement: ProjectContractorEngagement | null;
+  sources: SourceRecord[];
+  plans: SafetyPlan[];
+  activePlan: SafetyPlanDetail | null;
+  activePlanId: string | null;
+  onSelectPlan: (planId: string | null) => void;
+  onChanged: (planId?: string | null) => Promise<void>;
+}) {
+  const [title, setTitle] = useState("Site-Specific Safety Plan");
+  const [planType, setPlanType] = useState<SafetyPlanType>("site_specific_safety_plan");
+  const [planSourceId, setPlanSourceId] = useState("");
+  const [revisionIdentifier, setRevisionIdentifier] = useState("Rev 0");
+  const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
+  const [findingTitle, setFindingTitle] = useState("");
+  const [findingType, setFindingType] = useState<PlanFindingType>("reviewer_decision");
+  const [findingAuthority, setFindingAuthority] = useState<PlanFindingAuthority>("reviewer_decision");
+  const [findingText, setFindingText] = useState("");
+  const [recommendation, setRecommendation] = useState("");
+  const [internalNotes, setInternalNotes] = useState("");
+  const [revisionSourceId, setRevisionSourceId] = useState("");
+  const [newRevisionLabel, setNewRevisionLabel] = useState("Rev 1");
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const readySources = sources.filter((source) => source.processingStatus === "ready");
+  const currentReview = activePlan?.review ?? null;
+
+  useEffect(() => {
+    setRecommendation(currentReview?.contractorFacingSummary ?? "");
+    setInternalNotes(currentReview?.internalReviewerNotes ?? "");
+  }, [currentReview?.id]);
+
+  async function run(action: () => Promise<string | null | void>, message: string) {
+    setError("");
+    setStatus(message);
+    try {
+      const planId = await action();
+      await onChanged(planId ?? activePlanId);
+    } catch (planError) {
+      setError(planError instanceof Error ? planError.message : "Plan review update failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  async function createPlan(event: FormEvent) {
+    event.preventDefault();
+    if (!activeEngagement || !planSourceId) return;
+    await run(async () => {
+      const body = await api<{ safetyPlan: SafetyPlanDetail }>(`/api/engagements/${activeEngagement.id}/safety-plans`, {
+        method: "POST",
+        body: JSON.stringify({
+          engagementId: activeEngagement.id,
+          title,
+          planType,
+          sourceId: planSourceId,
+          revisionIdentifier
+        })
+      });
+      setRevisionIdentifier("Rev 0");
+      return body.safetyPlan.plan.id;
+    }, "Creating plan record...");
+  }
+
+  async function runReview() {
+    if (!activePlanId || selectedReferenceIds.length === 0) return;
+    await run(async () => {
+      await api<{ safetyPlan: SafetyPlanDetail }>(`/api/safety-plans/${activePlanId}/review-runs`, {
+        method: "POST",
+        body: JSON.stringify({
+          selectedReferences: selectedReferenceIds.map((sourceId) => {
+            const source = sources.find((item) => item.id === sourceId);
+            return {
+              sourceId,
+              authorityClassification: source?.authorityClassification ?? "general_reference",
+              citationLabel: source?.title ?? "Selected source"
+            };
+          })
+        })
+      });
+    }, "Running selected-source review...");
+  }
+
+  async function updateFinding(finding: PlanFinding, patch: Partial<PlanFinding>) {
+    await run(async () => {
+      await api<{ finding: PlanFinding }>(`/api/plan-findings/${finding.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch)
+      });
+    }, "Saving finding...");
+  }
+
+  async function addFinding(event: FormEvent) {
+    event.preventDefault();
+    if (!currentReview) return;
+    await run(async () => {
+      await api<{ finding: PlanFinding }>("/api/plan-findings", {
+        method: "POST",
+        body: JSON.stringify({
+          reviewId: currentReview.id,
+          title: findingTitle,
+          findingType,
+          authority: findingAuthority,
+          reviewerExplanation: findingText,
+          contractorFacingRecommendation: findingText,
+          sortOrder: activePlan?.findings.length ?? 0
+        })
+      });
+      setFindingTitle("");
+      setFindingText("");
+    }, "Adding reviewer finding...");
+  }
+
+  async function saveRecommendation() {
+    if (!currentReview) return;
+    await run(async () => {
+      await api<{ review: unknown }>(`/api/plan-reviews/${currentReview.id}/recommendation`, {
+        method: "PATCH",
+        body: JSON.stringify({ contractorFacingSummary: recommendation, internalReviewerNotes: internalNotes })
+      });
+    }, "Saving recommendation...");
+  }
+
+  async function markApproved() {
+    if (!activePlanId) return;
+    await run(async () => {
+      await api<{ safetyPlan: SafetyPlanDetail }>(`/api/safety-plans/${activePlanId}/approval`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "approved", reviewerNotes: "Approved by reviewer." })
+      });
+    }, "Approving plan...");
+  }
+
+  async function addRevision() {
+    if (!activePlanId || !revisionSourceId) return;
+    await run(async () => {
+      await api<{ safetyPlan: SafetyPlanDetail }>(`/api/safety-plans/${activePlanId}/revisions`, {
+        method: "POST",
+        body: JSON.stringify({
+          sourceId: revisionSourceId,
+          revisionIdentifier: newRevisionLabel,
+          priorRevisionId: activePlan?.plan.currentRevisionId ?? ""
+        })
+      });
+    }, "Adding new revision...");
+  }
+
+  return (
+    <section className="workbench-section">
+      <h2>Plan review</h2>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {status ? <p className="banner muted">{status}</p> : null}
+      <form onSubmit={createPlan} className="stack compact">
+        <label htmlFor="plan-title">Plan title<input id="plan-title" value={title} onChange={(event) => setTitle(event.target.value)} disabled={!activeEngagement} /></label>
+        <label htmlFor="plan-type">
+          Plan type
+          <select id="plan-type" value={planType} onChange={(event) => setPlanType(event.target.value as SafetyPlanType)} disabled={!activeEngagement}>
+            {planTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label htmlFor="plan-source">
+          Submitted plan source
+          <select id="plan-source" value={planSourceId} onChange={(event) => setPlanSourceId(event.target.value)} disabled={!activeEngagement}>
+            <option value="">Choose source</option>
+            {sources.map((source) => <option key={source.id} value={source.id}>{source.title} - {source.extractionStatus}</option>)}
+          </select>
+        </label>
+        <label htmlFor="plan-revision">Revision<input id="plan-revision" value={revisionIdentifier} onChange={(event) => setRevisionIdentifier(event.target.value)} /></label>
+        <button className="secondary" disabled={!activeEngagement || !planSourceId || !title}>Create plan record</button>
+      </form>
+      <div className="stack compact">
+        <label htmlFor="active-plan">
+          Open plan
+          <select id="active-plan" value={activePlanId ?? ""} onChange={(event) => onSelectPlan(event.target.value || null)} disabled={!activeEngagement}>
+            <option value="">Choose plan</option>
+            {plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.title} - {plan.reviewStatus}</option>)}
+          </select>
+        </label>
+        <label htmlFor="review-sources">
+          Review sources
+          <select id="review-sources" multiple value={selectedReferenceIds} onChange={(event) => setSelectedReferenceIds(Array.from(event.target.selectedOptions).map((option) => option.value))} disabled={!activePlan}>
+            {readySources.map((source) => <option key={source.id} value={source.id}>{source.title} - {authorityLabel(source.authorityClassification)}</option>)}
+          </select>
+        </label>
+        <button className="primary" type="button" disabled={!activePlan || selectedReferenceIds.length === 0} onClick={runReview}>Run review</button>
+      </div>
+      {activePlan?.findings.map((finding) => (
+        <article className="detail compact-detail" key={finding.id}>
+          <strong>{finding.title}</strong>
+          <span>{findingTypeLabel(finding.findingType)} - {findingAuthorityLabel(finding.authority)}</span>
+          <textarea value={finding.reviewerExplanation ?? ""} onChange={(event) => updateFinding(finding, { reviewerExplanation: event.target.value }).catch(() => undefined)} />
+          <button className="secondary" type="button" onClick={() => updateFinding(finding, { resolved: !finding.resolved })}>{finding.resolved ? "Mark unresolved" : "Mark resolved"}</button>
+          <button className="ghost" type="button" onClick={() => updateFinding(finding, { notApplicable: !finding.notApplicable })}>{finding.notApplicable ? "Applicable" : "Not applicable"}</button>
+        </article>
+      ))}
+      <form onSubmit={addFinding} className="stack compact">
+        <h3>Reviewer finding</h3>
+        <label htmlFor="finding-title">Title<input id="finding-title" value={findingTitle} onChange={(event) => setFindingTitle(event.target.value)} /></label>
+        <label htmlFor="finding-type">Finding type<select id="finding-type" value={findingType} onChange={(event) => setFindingType(event.target.value as PlanFindingType)}>{findingTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label htmlFor="finding-authority">Authority<select id="finding-authority" value={findingAuthority} onChange={(event) => setFindingAuthority(event.target.value as PlanFindingAuthority)}>{findingAuthorityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label htmlFor="finding-text">Explanation<textarea id="finding-text" value={findingText} onChange={(event) => setFindingText(event.target.value)} /></label>
+        <button className="secondary" disabled={!currentReview || !findingTitle}>Add finding</button>
+      </form>
+      <div className="stack compact">
+        <h3>Recommendation artifact</h3>
+        <label htmlFor="recommendation-text">Contractor-facing<textarea id="recommendation-text" value={recommendation} onChange={(event) => setRecommendation(event.target.value)} /></label>
+        <label htmlFor="internal-notes">Internal notes<textarea id="internal-notes" value={internalNotes} onChange={(event) => setInternalNotes(event.target.value)} /></label>
+        <button className="secondary" type="button" disabled={!currentReview} onClick={saveRecommendation}>Save artifact</button>
+        <button className="primary" type="button" disabled={!activePlan || activePlan.plan.reviewStatus === "approved"} onClick={markApproved}>Approve plan</button>
+      </div>
+      <div className="stack compact">
+        <h3>New revision</h3>
+        <label htmlFor="revision-source">Revision source<select id="revision-source" value={revisionSourceId} onChange={(event) => setRevisionSourceId(event.target.value)} disabled={!activePlan}>{sources.map((source) => <option key={source.id} value={source.id}>{source.title}</option>)}</select></label>
+        <label htmlFor="revision-label">Revision label<input id="revision-label" value={newRevisionLabel} onChange={(event) => setNewRevisionLabel(event.target.value)} /></label>
+        <button className="secondary" type="button" disabled={!activePlan || !revisionSourceId} onClick={addRevision}>Add revision</button>
+      </div>
+    </section>
+  );
+}
+
 function authorityLabel(value: AuthorityClassification): string {
   return authorityOptions.find((option) => option.value === value)?.label ?? value;
 }
@@ -1094,6 +1462,18 @@ function readinessLabel(value: ContractorReadinessSummary["overallStatus"]): str
   if (value === "in_progress") return "In progress";
   if (value === "attention_required") return "Attention required";
   return "Ready";
+}
+
+function planTypeLabel(value: SafetyPlanType): string {
+  return planTypeOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function findingTypeLabel(value: PlanFindingType): string {
+  return findingTypeOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function findingAuthorityLabel(value: PlanFindingAuthority): string {
+  return findingAuthorityOptions.find((option) => option.value === value)?.label ?? value;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

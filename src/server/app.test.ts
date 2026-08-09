@@ -388,6 +388,200 @@ describe("Phase 1 API", () => {
     expect(invalidRequirement.status).toBe(400);
   });
 
+  it("reviews safety plans with selected source evidence, editable findings, manual approval, and revision history", async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/engagements/00000000-0000-4000-8000-000000000000/safety-plans`);
+    expect(unauthenticated.status).toBe(401);
+
+    const cookie = await login();
+    const project = await createProject(cookie, "Plan Review Project");
+    const contractor = await createContractor(cookie, "Plan Review Demo");
+    const engagement = await createEngagement(cookie, project.id, contractor.id, "Demolition");
+    const planSource = await uploadTextSource(cookie, "Demo SSSP Rev 0", "The plan includes fall protection inspections and toolbox meetings.");
+    const regulatorySource = await uploadTextSource(cookie, "OSHA Fall Protection", "Fall protection systems must be inspected before use.");
+    const gcSource = await uploadTextSource(cookie, "GC Safety Requirements", "Demolition plans must describe debris removal and site controls.");
+    const unusedSource = await uploadTextSource(cookie, "Unused Global Guidance", "This source should not be selected.");
+    const regulatoryDetail = await getSource(cookie, regulatorySource.id);
+
+    const created = await fetch(`${baseUrl}/api/engagements/${engagement.id}/safety-plans`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        engagementId: engagement.id,
+        title: "Site-Specific Safety Plan",
+        planType: "site_specific_safety_plan",
+        sourceId: planSource.id,
+        revisionIdentifier: "Rev 0",
+        submittedDate: "2026-10-01"
+      })
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await json<{ safetyPlan: { plan: { id: string; reviewStatus: string; engagementId: string }; revisions: Array<{ id: string; sourceId: string }> } }>(created);
+    expect(createdBody.safetyPlan.plan).toEqual(expect.objectContaining({ engagementId: engagement.id, reviewStatus: "pending" }));
+    expect(createdBody.safetyPlan.revisions[0]).toEqual(expect.objectContaining({ sourceId: planSource.id }));
+
+    const noReferences = await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}/review-runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ selectedReferences: [] })
+    });
+    expect(noReferences.status).toBe(400);
+
+    const reviewRun = await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}/review-runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        selectedReferences: [
+          {
+            sourceId: regulatorySource.id,
+            sourceChunkId: regulatoryDetail.chunks[0]?.id,
+            authorityClassification: "regulatory_requirement",
+            citationLabel: "OSHA excerpt"
+          },
+          {
+            sourceId: gcSource.id,
+            authorityClassification: "gc_policy",
+            citationLabel: "GC requirements"
+          }
+        ]
+      })
+    });
+    expect(reviewRun.status).toBe(201);
+    const reviewed = await json<{ safetyPlan: { plan: { reviewStatus: string; approvedAt: string | null }; review: { id: string; status: string; contractorFacingSummary: string }; references: Array<{ sourceId: string }>; findings: Array<{ id: string; authority: string; findingType: string; referenceSourceId: string | null; aiExplanation: string | null; origin: string }> } }>(reviewRun);
+    expect(reviewed.safetyPlan.plan).toEqual(expect.objectContaining({ reviewStatus: "pending", approvedAt: null }));
+    expect(reviewed.safetyPlan.review.status).toBe("pending");
+    expect(reviewed.safetyPlan.references.map((reference) => reference.sourceId)).toEqual([regulatorySource.id, gcSource.id]);
+    expect(reviewed.safetyPlan.references.map((reference) => reference.sourceId)).not.toContain(unusedSource.id);
+    expect(reviewed.safetyPlan.findings).toHaveLength(2);
+    expect(reviewed.safetyPlan.findings[0]).toEqual(expect.objectContaining({ authority: "regulatory_requirement", origin: "assistant" }));
+    expect(reviewed.safetyPlan.findings[0].referenceSourceId).toBeTruthy();
+    expect(reviewed.safetyPlan.findings[0].aiExplanation).toContain("Reviewer");
+
+    const editedFinding = await fetch(`${baseUrl}/api/plan-findings/${reviewed.safetyPlan.findings[0].id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        findingType: "revision_recommended",
+        reviewerExplanation: "Clarify inspection frequency.",
+        reviewerNotes: "Internal note only.",
+        contractorFacingRecommendation: "Clarify how fall protection inspections will be documented.",
+        recommendedRevisionText: "Before each use, fall protection equipment will be inspected and defective equipment removed from service.",
+        reviewerDecision: "Approved with project condition",
+        resolved: true
+      })
+    });
+    expect(editedFinding.status).toBe(200);
+
+    const reviewerFinding = await fetch(`${baseUrl}/api/plan-findings`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        reviewId: reviewed.safetyPlan.review.id,
+        title: "Site logistics clarification",
+        findingType: "reviewer_decision",
+        authority: "reviewer_decision",
+        reviewerExplanation: "Reviewer added this item after reading the plan.",
+        reviewerNotes: "Discuss at preconstruction meeting.",
+        contractorFacingRecommendation: "Confirm haul routes before mobilization.",
+        sortOrder: 10
+      })
+    });
+    expect(reviewerFinding.status).toBe(201);
+
+    const recommendation = await fetch(`${baseUrl}/api/plan-reviews/${reviewed.safetyPlan.review.id}/recommendation`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        contractorFacingSummary: "Required revisions:\n- Clarify fall protection inspection documentation.",
+        internalReviewerNotes: "Do not send internal exception discussion."
+      })
+    });
+    expect(recommendation.status).toBe(200);
+
+    const reopenedPending = await json<{ safetyPlan: { review: { contractorFacingSummary: string; internalReviewerNotes: string | null } | null; findings: Array<{ origin: string; reviewerNotes: string | null }>; auditEvents: unknown[] } }>(
+      await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}`, { headers: { cookie } })
+    );
+    expect(reopenedPending.safetyPlan.findings.some((finding) => finding.origin === "reviewer")).toBe(true);
+    expect(reopenedPending.safetyPlan.review?.contractorFacingSummary).toContain("Required revisions");
+    expect(reopenedPending.safetyPlan.review?.internalReviewerNotes).toContain("internal");
+
+    const approved = await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}/approval`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ status: "approved", reviewerNotes: "Approved by human reviewer." })
+    });
+    expect(approved.status).toBe(200);
+    const approvedBody = await json<{ safetyPlan: { plan: { reviewStatus: string; approvedAt: string | null; approvedByUserId: string | null }; review: { status: string } } }>(approved);
+    expect(approvedBody.safetyPlan.plan.reviewStatus).toBe("approved");
+    expect(approvedBody.safetyPlan.plan.approvedAt).toBeTruthy();
+    expect(approvedBody.safetyPlan.plan.approvedByUserId).toBeTruthy();
+    expect(approvedBody.safetyPlan.review.status).toBe("approved");
+
+    const rev1Source = await uploadTextSource(cookie, "Demo SSSP Rev 1", "The revised plan includes inspection documentation and debris removal controls.");
+    const revision = await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}/revisions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        sourceId: rev1Source.id,
+        revisionIdentifier: "Rev 1",
+        priorRevisionId: createdBody.safetyPlan.revisions[0].id
+      })
+    });
+    expect(revision.status).toBe(201);
+    const revisionBody = await json<{ safetyPlan: { plan: { reviewStatus: string; approvedAt: string | null }; revisions: Array<{ id: string; revisionIdentifier: string; sourceId: string; priorRevisionId: string | null }> } }>(revision);
+    expect(revisionBody.safetyPlan.plan).toEqual(expect.objectContaining({ reviewStatus: "pending", approvedAt: null }));
+    expect(revisionBody.safetyPlan.revisions).toHaveLength(2);
+    expect(revisionBody.safetyPlan.revisions[0].sourceId).toBe(planSource.id);
+    expect(revisionBody.safetyPlan.revisions[1]).toEqual(expect.objectContaining({ sourceId: rev1Source.id, priorRevisionId: createdBody.safetyPlan.revisions[0].id }));
+
+    const comparison = await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}/resubmission-comparisons`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        priorRevisionId: createdBody.safetyPlan.revisions[0].id,
+        newRevisionId: revisionBody.safetyPlan.revisions[1].id,
+        findingResolutions: [{ findingId: reviewed.safetyPlan.findings[0].id, resolutionStatus: "partially_addressed", reviewerNotes: "Needs final check." }]
+      })
+    });
+    expect(comparison.status).toBe(201);
+    const comparisonBody = await json<{ comparisons: Array<{ resolutionStatus: string }> }>(comparison);
+    expect(comparisonBody.comparisons[0].resolutionStatus).toBe("partially_addressed");
+
+    const reopened = await json<{ safetyPlan: { auditEvents: unknown[] } }>(
+      await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}`, { headers: { cookie } })
+    );
+    expect(reopened.safetyPlan.auditEvents.length).toBeGreaterThanOrEqual(5);
+
+    const broken = await uploadMultipart(cookie, {
+      title: "Broken safety plan",
+      scope: "global",
+      authorityClassification: "contractor_submission"
+    }, {
+      filename: "broken-plan.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      content: "not a valid plan"
+    });
+    const brokenBody = await json<{ sources: Array<{ id: string; processingStatus: string }> }>(broken);
+    expect(brokenBody.sources[0].processingStatus).toBe("failed");
+    const brokenPlan = await fetch(`${baseUrl}/api/engagements/${engagement.id}/safety-plans`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        engagementId: engagement.id,
+        title: "Broken Plan",
+        planType: "other",
+        sourceId: brokenBody.sources[0].id,
+        revisionIdentifier: "Rev 0"
+      })
+    });
+    const brokenPlanBody = await json<{ safetyPlan: { plan: { id: string } } }>(brokenPlan);
+    const failedReview = await fetch(`${baseUrl}/api/safety-plans/${brokenPlanBody.safetyPlan.plan.id}/review-runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ selectedReferences: [{ sourceId: regulatorySource.id, authorityClassification: "regulatory_requirement" }] })
+    });
+    expect(failedReview.status).toBe(400);
+  });
+
   async function login(): Promise<string> {
     const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",
@@ -442,6 +636,13 @@ describe("Phase 1 API", () => {
     expect(response.status).toBe(201);
     const body = await json<{ sources: Array<{ id: string }> }>(response);
     return body.sources[0];
+  }
+
+  async function getSource(cookie: string, sourceId: string): Promise<{ chunks: Array<{ id: string; text: string }> }> {
+    const response = await fetch(`${baseUrl}/api/sources/${sourceId}`, { headers: { cookie } });
+    expect(response.status).toBe(200);
+    const body = await json<{ source: { chunks: Array<{ id: string; text: string }> } }>(response);
+    return body.source;
   }
 
   async function uploadMultipart(

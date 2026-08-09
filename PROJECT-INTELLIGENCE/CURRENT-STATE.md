@@ -7,7 +7,8 @@ Status date: 2026-08-09
 - Product doctrine remains approved as V1 governing direction.
 - Phase 1 foundation implementation is complete.
 - Phase 2 source intelligence foundation is formally complete and remains limited to the approved source-intelligence scope.
-- Phase 3 contractor readiness is implemented for review and remains limited to the approved readiness scope.
+- Phase 3 contractor readiness is formally complete and remains limited to the approved readiness scope.
+- Phase 4 safety plan review is implemented for review and remains limited to the approved plan-review scope.
 - GitHub repository `https://github.com/jerrsapps1/PRODUCT-INTELLIGENCE-SWA.git` on branch `main` is established as the implementation source of truth.
 - Local project root is `C:\dev2\PRODUCT-INTELLIGENCE-SWA`; no nested Git repository remains.
 - The repository now contains a TypeScript full-stack application foundation with a React responsive/PWA client and Node HTTP API.
@@ -15,6 +16,7 @@ Status date: 2026-08-09
 - The initial schema distinguishes users, projects, contractor master records, sessions, and project-contractor engagements.
 - The source model distinguishes source records, original storage references, extracted chunks, and project-source activation links.
 - The readiness model distinguishes project-level requirements from contractor-specific engagement statuses and evidence reviews.
+- The plan-review model preserves submitted plan sources, revisions, selected review sources, draft findings, reviewer edits, recommendations, approvals, and audit history separately.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1
@@ -55,9 +57,23 @@ Status date: 2026-08-09
 - Competent person evidence records tied to project-contractor engagements.
 - Readiness audit events and responsive readiness workspace controls.
 
+## Implemented in Phase 4
+
+- Project-contractor safety plan records with immutable source-backed revisions.
+- Pending/Approved plan lifecycle controlled by the human reviewer.
+- Selected-source review runs that generate editable draft findings without silently using the full library.
+- Finding type and authority distinction across compliance, deficiencies, conflicts, recommendations, and reviewer decisions.
+- Source/chunk provenance fields for plan passages and reference citations.
+- Editable reviewer explanations, internal notes, contractor-facing recommendations, recommended revision text, and reviewer decisions.
+- Reviewer-created findings, finding removal, and resolved/not-applicable flags.
+- Editable contractor-facing recommendation artifact separate from the original submitted plan.
+- New revision capture without overwriting earlier revisions.
+- Resubmission comparison records for prior finding resolution tracking.
+- Plan-review audit events and responsive side-by-side/tablet review UI.
+
 ## Not implemented by design
 
-- Embeddings, vector search, general crawling, safety plan review, observations, incidents, corrective actions, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
+- Embeddings, vector search, general crawling, field observations, incidents, corrective actions, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
 - Production object-storage provider integration. The abstraction exists; hosted object storage must be configured for production.
 - Provider-specific AI integrations. Phase 2 does not create fake AI output.
 
@@ -70,4 +86,4 @@ Status date: 2026-08-09
 
 ## Current constraint
 
-Phase 3 Contractor Readiness is implemented for review. Do not begin Phase 4 Safety Plan Review or any later phase.
+Phase 4 Safety Plan Review is implemented for review. Do not begin Phase 5 Field Operations or any later phase.

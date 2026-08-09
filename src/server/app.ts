@@ -12,10 +12,18 @@ import {
   projectSourceActivationSchema,
   projectSourceSchema,
   projectCreateSchema,
+  planApprovalSchema,
+  planFindingCreateSchema,
+  planFindingUpdateSchema,
+  planRecommendationUpdateSchema,
+  planReviewRunSchema,
   readinessEvidenceCreateSchema,
   readinessEvidenceReviewSchema,
   readinessRequirementCreateSchema,
   readinessRequirementUpdateSchema,
+  resubmissionComparisonCreateSchema,
+  safetyPlanCreateSchema,
+  safetyPlanRevisionCreateSchema,
   safetyMetricCreateSchema,
   sourceMetadataSchema,
   sourceSearchSchema,
@@ -30,6 +38,7 @@ import { MemoryObjectStorage, type ObjectStorage } from "./storage";
 import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
+  DuplicatePlanRevisionSourceError,
   DuplicateProjectSourceError,
   DuplicateRequirementApplicationError,
   type AppStore,
@@ -319,6 +328,92 @@ export async function createApp(options: AppOptions) {
         return;
       }
 
+      if (parts[0] === "api" && parts[1] === "engagements" && parts[3] === "safety-plans") {
+        const engagementId = parts[2];
+        if (method === "GET" && parts.length === 4) {
+          sendJson(res, 200, { plans: await store.listSafetyPlans(userId, engagementId) });
+          return;
+        }
+        if (method === "POST" && parts.length === 4) {
+          const input = await readJson(req, safetyPlanCreateSchema);
+          if (input.engagementId !== engagementId) {
+            sendJson(res, 400, { error: "Engagement path and payload must match" });
+            return;
+          }
+          sendJson(res, 201, {
+            safetyPlan: await store.createSafetyPlan(userId, {
+              ...input,
+              revisionIdentifier: input.revisionIdentifier ?? "Rev 0"
+            })
+          });
+          return;
+        }
+      }
+
+      if (parts[0] === "api" && parts[1] === "safety-plans") {
+        const planId = parts[2];
+        if (method === "GET" && parts.length === 3) {
+          const detail = await store.getSafetyPlanDetail(userId, planId);
+          if (!detail) sendJson(res, 404, { error: "Safety plan not found" });
+          else sendJson(res, 200, { safetyPlan: detail });
+          return;
+        }
+        if (method === "POST" && parts[3] === "revisions" && parts.length === 4) {
+          const detail = await store.createSafetyPlanRevision(userId, planId, await readJson(req, safetyPlanRevisionCreateSchema));
+          if (!detail) sendJson(res, 404, { error: "Safety plan not found" });
+          else sendJson(res, 201, { safetyPlan: detail });
+          return;
+        }
+        if (method === "POST" && parts[3] === "review-runs" && parts.length === 4) {
+          const detail = await store.runPlanReview(userId, planId, await readJson(req, planReviewRunSchema));
+          sendJson(res, 201, { safetyPlan: detail });
+          return;
+        }
+        if (method === "PATCH" && parts[3] === "approval" && parts.length === 4) {
+          const detail = await store.updatePlanApproval(userId, planId, await readJson(req, planApprovalSchema));
+          if (!detail) sendJson(res, 404, { error: "Safety plan not found" });
+          else sendJson(res, 200, { safetyPlan: detail });
+          return;
+        }
+        if (method === "POST" && parts[3] === "resubmission-comparisons" && parts.length === 4) {
+          const input = await readJson(req, resubmissionComparisonCreateSchema);
+          sendJson(res, 201, {
+            comparisons: await store.createResubmissionComparison(userId, planId, {
+              ...input,
+              findingResolutions: input.findingResolutions ?? []
+            })
+          });
+          return;
+        }
+      }
+
+      if (method === "POST" && parts.join("/") === "api/plan-findings") {
+        const input = await readJson(req, planFindingCreateSchema);
+        sendJson(res, 201, { finding: await store.createPlanFinding(userId, { ...input, sortOrder: input.sortOrder ?? 0 }) });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "plan-findings" && parts.length === 3) {
+        if (method === "PATCH") {
+          const finding = await store.updatePlanFinding(userId, parts[2], await readJson(req, planFindingUpdateSchema));
+          if (!finding) sendJson(res, 404, { error: "Plan finding not found" });
+          else sendJson(res, 200, { finding });
+          return;
+        }
+        if (method === "DELETE") {
+          await store.deletePlanFinding(userId, parts[2]);
+          sendNoContent(res);
+          return;
+        }
+      }
+
+      if (method === "PATCH" && parts[0] === "api" && parts[1] === "plan-reviews" && parts[3] === "recommendation" && parts.length === 4) {
+        const review = await store.updatePlanRecommendation(userId, parts[2], await readJson(req, planRecommendationUpdateSchema));
+        if (!review) sendJson(res, 404, { error: "Plan review not found" });
+        else sendJson(res, 200, { review });
+        return;
+      }
+
       if (method === "GET" && parts.join("/") === "api/sources") {
         const filters = sourceSearchSchema.parse(Object.fromEntries(url.searchParams.entries()));
         sendJson(res, 200, { sources: await store.listSources(userId, filters) });
@@ -511,15 +606,30 @@ export async function createApp(options: AppOptions) {
         sendJson(res, 409, { error: error.message });
         return;
       }
+      if (error instanceof DuplicatePlanRevisionSourceError) {
+        sendJson(res, 409, { error: error.message });
+        return;
+      }
       if (error instanceof Error && (
         error.message === "Project not found" ||
         error.message === "Contractor not found" ||
         error.message === "Source not found" ||
         error.message === "Contractor engagement not found" ||
         error.message === "Readiness requirement not found" ||
-        error.message === "Requirement status not found"
+        error.message === "Requirement status not found" ||
+        error.message === "Safety plan not found" ||
+        error.message === "Safety plan revision not found" ||
+        error.message === "Plan review not found"
       )) {
         sendJson(res, 404, { error: error.message });
+        return;
+      }
+      if (error instanceof Error && (
+        error.message === "Review source is not available to this project" ||
+        error.message === "Plan extraction failed" ||
+        error.message === "At least one review source is required"
+      )) {
+        sendJson(res, 400, { error: error.message });
         return;
       }
       if (error instanceof Error && (error.message.toLowerCase().includes("private network") || error.message.includes("Localhost") || error.message.includes("Only HTTP"))) {

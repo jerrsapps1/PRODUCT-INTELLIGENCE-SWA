@@ -26,6 +26,22 @@ import type {
   ReadinessStatus,
   SafetyMetric,
   SafetyMetricCreateInput,
+  SafetyPlan,
+  SafetyPlanCreateInput,
+  SafetyPlanDetail,
+  SafetyPlanRevision,
+  SafetyPlanRevisionCreateInput,
+  PlanApprovalInput,
+  PlanFinding,
+  PlanFindingCreateInput,
+  PlanFindingUpdateInput,
+  PlanRecommendationUpdateInput,
+  PlanReview,
+  PlanReviewReference,
+  PlanReviewRunInput,
+  PlanReviewAuditEvent,
+  ResubmissionComparison,
+  ResubmissionComparisonCreateInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -36,6 +52,7 @@ import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
   DuplicateProjectSourceError,
+  DuplicatePlanRevisionSourceError,
   DuplicateRequirementApplicationError,
   type AppStore,
   type StoredUser
@@ -64,6 +81,13 @@ export class MemoryStore implements AppStore {
   private safetyMetrics = new Map<string, SafetyMetric>();
   private competentPersons = new Map<string, CompetentPersonEvidence>();
   private auditEvents: ReadinessAuditEvent[] = [];
+  private safetyPlans = new Map<string, SafetyPlan>();
+  private planRevisions = new Map<string, SafetyPlanRevision>();
+  private planReviews = new Map<string, PlanReview>();
+  private planReferences = new Map<string, PlanReviewReference>();
+  private planFindings = new Map<string, PlanFinding>();
+  private planComparisons = new Map<string, ResubmissionComparison>();
+  private planAuditEvents: PlanReviewAuditEvent[] = [];
 
   async migrate(): Promise<void> {}
 
@@ -583,10 +607,413 @@ export class MemoryStore implements AppStore {
     return summaries;
   }
 
+  async listSafetyPlans(userId: string, engagementId: string): Promise<SafetyPlan[]> {
+    if (!(await this.getEngagementForUser(userId, engagementId))) return [];
+    return [...this.safetyPlans.values()]
+      .filter((plan) => plan.engagementId === engagementId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async createSafetyPlan(userId: string, input: SafetyPlanCreateInput): Promise<SafetyPlanDetail> {
+    const engagement = await this.getEngagementForUser(userId, input.engagementId);
+    if (!engagement) throw new Error("Contractor engagement not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    const timestamp = now();
+    const plan: SafetyPlan = {
+      id: randomUUID(),
+      projectId: engagement.projectId,
+      engagementId: engagement.id,
+      contractorId: engagement.contractorId,
+      title: input.title.trim(),
+      planType: input.planType,
+      customPlanType: clean(input.customPlanType),
+      currentRevisionId: null,
+      reviewStatus: "pending",
+      approvedAt: null,
+      approvedByUserId: null,
+      reviewerNotes: clean(input.reviewerNotes),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.safetyPlans.set(plan.id, plan);
+    const revision = this.createRevisionRecord(plan.id, input.sourceId, input.revisionIdentifier ?? "Rev 0", input.submittedDate, input.priorRevisionId);
+    this.planRevisions.set(revision.id, { ...revision, source });
+    const updated = { ...plan, currentRevisionId: revision.id };
+    this.safetyPlans.set(plan.id, updated);
+    this.addPlanAudit(userId, plan.id, null, "plan_created", `Created plan ${plan.title} ${revision.revisionIdentifier}`);
+    return (await this.getSafetyPlanDetail(userId, plan.id)) as SafetyPlanDetail;
+  }
+
+  async createSafetyPlanRevision(userId: string, planId: string, input: SafetyPlanRevisionCreateInput): Promise<SafetyPlanDetail | null> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan) return null;
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    if ([...this.planRevisions.values()].some((revision) => revision.planId === planId && revision.sourceId === input.sourceId)) {
+      throw new DuplicatePlanRevisionSourceError();
+    }
+    const revision = this.createRevisionRecord(planId, input.sourceId, input.revisionIdentifier, input.submittedDate, input.priorRevisionId);
+    this.planRevisions.set(revision.id, { ...revision, source });
+    const updated = {
+      ...plan,
+      currentRevisionId: revision.id,
+      reviewStatus: "pending" as const,
+      approvedAt: null,
+      approvedByUserId: null,
+      updatedAt: now()
+    };
+    this.safetyPlans.set(planId, updated);
+    this.addPlanAudit(userId, planId, null, "revision_received", `Received ${revision.revisionIdentifier}`);
+    return this.getSafetyPlanDetail(userId, planId);
+  }
+
+  async getSafetyPlanDetail(userId: string, planId: string): Promise<SafetyPlanDetail | null> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan) return null;
+    const revisions = [...this.planRevisions.values()]
+      .filter((revision) => revision.planId === planId)
+      .map((revision) => ({ ...revision, source: this.sources.get(revision.sourceId) }))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const review = [...this.planReviews.values()].find((item) => item.revisionId === plan.currentRevisionId) ?? null;
+    const references = review
+      ? [...this.planReferences.values()]
+          .filter((reference) => reference.reviewId === review.id)
+          .map((reference) => ({ ...reference, source: this.sources.get(reference.sourceId) }))
+      : [];
+    const findings = review ? [...this.planFindings.values()].filter((finding) => finding.reviewId === review.id).sort((a, b) => a.sortOrder - b.sortOrder) : [];
+    const revisionIds = new Set(revisions.map((revision) => revision.id));
+    const comparisons = [...this.planComparisons.values()].filter(
+      (comparison) => comparison.planId === planId && revisionIds.has(comparison.priorRevisionId) && revisionIds.has(comparison.newRevisionId)
+    );
+    const auditEvents = this.planAuditEvents.filter((event) => event.planId === planId).slice(-100).reverse();
+    return { plan, revisions, review, references, findings, comparisons, auditEvents };
+  }
+
+  async runPlanReview(userId: string, planId: string, input: PlanReviewRunInput): Promise<SafetyPlanDetail> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan || !plan.currentRevisionId) throw new Error("Safety plan not found");
+    const revision = this.planRevisions.get(plan.currentRevisionId);
+    if (!revision) throw new Error("Safety plan revision not found");
+    const planSource = await this.getSource(userId, revision.sourceId);
+    if (!planSource) throw new Error("Source not found");
+    if (planSource.extractionStatus === "failed") throw new Error("Plan extraction failed");
+    if (input.selectedReferences.length === 0) throw new Error("At least one review source is required");
+    const timestamp = now();
+    const review: PlanReview = {
+      id: randomUUID(),
+      planId,
+      revisionId: revision.id,
+      status: "pending",
+      assistantProvider: "local-review-assistant",
+      assistantModel: "transparent-selected-source-v1",
+      processingStatus: "completed",
+      errorState: null,
+      promptConfigVersion: "phase4-local-v1",
+      contractorFacingSummary: "",
+      internalReviewerNotes: "",
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    [...this.planReviews.values()].filter((item) => item.revisionId === revision.id).forEach((item) => this.planReviews.delete(item.id));
+    this.planReviews.set(review.id, review);
+    for (const referenceInput of input.selectedReferences) {
+      const source = await this.getSource(userId, referenceInput.sourceId);
+      if (!source) throw new Error("Source not found");
+      this.ensureSelectableReviewReference(plan.projectId, source);
+      const reference: PlanReviewReference = {
+        id: randomUUID(),
+        reviewId: review.id,
+        sourceId: source.id,
+        sourceChunkId: clean(referenceInput.sourceChunkId),
+        authorityClassification: referenceInput.authorityClassification,
+        citationLabel: clean(referenceInput.citationLabel),
+        createdAt: timestamp,
+        source
+      };
+      this.planReferences.set(reference.id, reference);
+    }
+    const generatedFindings = await this.generateDraftFindings(review, planSource, input.selectedReferences);
+    generatedFindings.forEach((finding) => this.planFindings.set(finding.id, finding));
+    const updatedReview = {
+      ...review,
+      contractorFacingSummary: this.buildRecommendationSummary(plan, generatedFindings, input.selectedReferences),
+      updatedAt: now()
+    };
+    this.planReviews.set(review.id, updatedReview);
+    this.addPlanAudit(userId, planId, review.id, "review_run_completed", `Generated ${generatedFindings.length} draft findings from selected sources`);
+    return (await this.getSafetyPlanDetail(userId, planId)) as SafetyPlanDetail;
+  }
+
+  async createPlanFinding(userId: string, input: PlanFindingCreateInput): Promise<PlanFinding> {
+    const review = await this.getReviewForUser(userId, input.reviewId);
+    if (!review) throw new Error("Plan review not found");
+    const timestamp = now();
+    const finding = this.materializeFinding(input, review.id, "reviewer", timestamp);
+    this.planFindings.set(finding.id, finding);
+    this.addPlanAudit(userId, review.planId, review.id, "finding_created", `Reviewer created finding: ${finding.title}`);
+    return finding;
+  }
+
+  async updatePlanFinding(userId: string, findingId: string, input: PlanFindingUpdateInput): Promise<PlanFinding | null> {
+    const current = this.planFindings.get(findingId);
+    if (!current || !(await this.getReviewForUser(userId, current.reviewId))) return null;
+    const updated: PlanFinding = {
+      ...current,
+      title: input.title ?? current.title,
+      findingType: input.findingType ?? current.findingType,
+      authority: input.authority ?? current.authority,
+      planSourceId: input.planSourceId === undefined ? current.planSourceId : clean(input.planSourceId),
+      planSourceChunkId: input.planSourceChunkId === undefined ? current.planSourceChunkId : clean(input.planSourceChunkId),
+      referenceSourceId: input.referenceSourceId === undefined ? current.referenceSourceId : clean(input.referenceSourceId),
+      referenceSourceChunkId: input.referenceSourceChunkId === undefined ? current.referenceSourceChunkId : clean(input.referenceSourceChunkId),
+      referenceCitationLabel: input.referenceCitationLabel === undefined ? current.referenceCitationLabel : clean(input.referenceCitationLabel),
+      reviewerExplanation: input.reviewerExplanation === undefined ? current.reviewerExplanation : clean(input.reviewerExplanation),
+      reviewerNotes: input.reviewerNotes === undefined ? current.reviewerNotes : clean(input.reviewerNotes),
+      contractorFacingRecommendation: input.contractorFacingRecommendation === undefined ? current.contractorFacingRecommendation : clean(input.contractorFacingRecommendation),
+      recommendedRevisionText: input.recommendedRevisionText === undefined ? current.recommendedRevisionText : clean(input.recommendedRevisionText),
+      reviewerDecision: input.reviewerDecision === undefined ? current.reviewerDecision : clean(input.reviewerDecision),
+      resolved: input.resolved ?? current.resolved,
+      notApplicable: input.notApplicable ?? current.notApplicable,
+      sortOrder: input.sortOrder ?? current.sortOrder,
+      updatedAt: now()
+    };
+    this.planFindings.set(findingId, updated);
+    const review = this.planReviews.get(updated.reviewId);
+    if (review) this.addPlanAudit(userId, review.planId, review.id, "finding_edited", `Edited finding: ${updated.title}`);
+    return updated;
+  }
+
+  async deletePlanFinding(userId: string, findingId: string): Promise<void> {
+    const current = this.planFindings.get(findingId);
+    if (!current) return;
+    const review = await this.getReviewForUser(userId, current.reviewId);
+    if (!review) return;
+    this.planFindings.delete(findingId);
+    this.addPlanAudit(userId, review.planId, review.id, "finding_removed", `Removed finding: ${current.title}`);
+  }
+
+  async updatePlanRecommendation(userId: string, reviewId: string, input: PlanRecommendationUpdateInput): Promise<PlanReview | null> {
+    const review = await this.getReviewForUser(userId, reviewId);
+    if (!review) return null;
+    const updated = {
+      ...review,
+      contractorFacingSummary: input.contractorFacingSummary,
+      internalReviewerNotes: clean(input.internalReviewerNotes),
+      updatedAt: now()
+    };
+    this.planReviews.set(reviewId, updated);
+    this.addPlanAudit(userId, review.planId, reviewId, "recommendation_edited", "Edited contractor-facing recommendation artifact");
+    return updated;
+  }
+
+  async updatePlanApproval(userId: string, planId: string, input: PlanApprovalInput): Promise<SafetyPlanDetail | null> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan) return null;
+    const approved = input.status === "approved";
+    const updated: SafetyPlan = {
+      ...plan,
+      reviewStatus: input.status,
+      approvedAt: approved ? now() : null,
+      approvedByUserId: approved ? userId : null,
+      reviewerNotes: input.reviewerNotes === undefined ? plan.reviewerNotes : clean(input.reviewerNotes),
+      updatedAt: now()
+    };
+    this.safetyPlans.set(planId, updated);
+    const review = [...this.planReviews.values()].find((item) => item.revisionId === plan.currentRevisionId);
+    if (review) this.planReviews.set(review.id, { ...review, status: input.status, updatedAt: now() });
+    this.addPlanAudit(userId, planId, review?.id ?? null, approved ? "plan_approved" : "plan_marked_pending", `Reviewer marked plan ${input.status}`);
+    return this.getSafetyPlanDetail(userId, planId);
+  }
+
+  async createResubmissionComparison(userId: string, planId: string, input: ResubmissionComparisonCreateInput): Promise<ResubmissionComparison[]> {
+    const plan = await this.getPlanForUser(userId, planId);
+    if (!plan) throw new Error("Safety plan not found");
+    const timestamp = now();
+    const comparisons = input.findingResolutions.map((resolution) => ({
+      id: randomUUID(),
+      planId,
+      priorRevisionId: input.priorRevisionId,
+      newRevisionId: input.newRevisionId,
+      findingId: resolution.findingId,
+      resolutionStatus: resolution.resolutionStatus,
+      reviewerNotes: clean(resolution.reviewerNotes),
+      createdAt: timestamp
+    }));
+    comparisons.forEach((comparison) => this.planComparisons.set(comparison.id, comparison));
+    this.addPlanAudit(userId, planId, null, "resubmission_compared", `Compared ${input.priorRevisionId} to ${input.newRevisionId}`);
+    return comparisons;
+  }
+
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
     const engagement = this.engagements.get(engagementId);
     if (!engagement || !(await this.getProject(userId, engagement.projectId))) return null;
     return engagement;
+  }
+
+  private async getPlanForUser(userId: string, planId: string): Promise<SafetyPlan | null> {
+    const plan = this.safetyPlans.get(planId);
+    if (!plan || !(await this.getProject(userId, plan.projectId))) return null;
+    return plan;
+  }
+
+  private async getReviewForUser(userId: string, reviewId: string): Promise<PlanReview | null> {
+    const review = this.planReviews.get(reviewId);
+    if (!review || !(await this.getPlanForUser(userId, review.planId))) return null;
+    return review;
+  }
+
+  private createRevisionRecord(
+    planId: string,
+    sourceId: string,
+    revisionIdentifier: string,
+    submittedDate?: string,
+    priorRevisionId?: string
+  ): SafetyPlanRevision {
+    return {
+      id: randomUUID(),
+      planId,
+      sourceId,
+      revisionIdentifier: revisionIdentifier.trim(),
+      submittedDate: clean(submittedDate),
+      priorRevisionId: clean(priorRevisionId),
+      createdAt: now()
+    };
+  }
+
+  private ensureSelectableReviewReference(projectId: string, source: SourceRecord): void {
+    const activeProjectSource = [...this.projectSources.values()].some(
+      (link) => link.projectId === projectId && link.sourceId === source.id && link.activationStatus === "active"
+    );
+    if (source.scope === "global" || source.projectId === projectId || activeProjectSource) return;
+    throw new Error("Review source is not available to this project");
+  }
+
+  private async generateDraftFindings(
+    review: PlanReview,
+    planSource: SourceDetail,
+    references: Array<{ sourceId: string; sourceChunkId?: string; authorityClassification: SourceRecord["authorityClassification"]; citationLabel?: string }>
+  ): Promise<PlanFinding[]> {
+    const planText = planSource.chunks.map((chunk) => chunk.text).join(" ").toLowerCase();
+    const firstPlanChunk = planSource.chunks[0];
+    const findings: PlanFinding[] = [];
+    let order = 0;
+    for (const reference of references) {
+      const source = await this.getSource(planSource.ownerUserId, reference.sourceId);
+      if (!source) continue;
+      const selectedChunk = reference.sourceChunkId
+        ? source.chunks.find((chunk) => chunk.id === reference.sourceChunkId)
+        : source.chunks[0];
+      const referenceText = selectedChunk?.text ?? source.title;
+      const keywords = referenceText.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length > 4).slice(0, 8);
+      const matched = keywords.some((word) => planText.includes(word));
+      const authority = reference.authorityClassification === "regulatory_requirement" ? "regulatory_requirement" : "project_requirement";
+      const findingType = matched ? "compliant" : "deficiency";
+      findings.push({
+        id: randomUUID(),
+        reviewId: review.id,
+        title: matched ? `Plan addresses ${source.title}` : `Review needed for ${source.title}`,
+        findingType,
+        authority,
+        planSourceId: planSource.id,
+        planSourceChunkId: firstPlanChunk?.id ?? null,
+        referenceSourceId: source.id,
+        referenceSourceChunkId: selectedChunk?.id ?? null,
+        referenceCitationLabel: clean(reference.citationLabel) ?? selectedChunk?.locationLabel ?? source.title,
+        aiExplanation: matched
+          ? "The submitted plan appears to address language found in the selected reference. Reviewer confirmation is still required."
+          : "The selected reference contains terms that were not clearly found in the submitted plan extraction. This is a draft deficiency for reviewer evaluation.",
+        reviewerExplanation: matched
+          ? "Accepted for reviewer confirmation."
+          : "Clarify or revise the plan to address the selected review source.",
+        reviewerNotes: null,
+        contractorFacingRecommendation: matched ? null : `Revise the plan to address ${source.title}.`,
+        recommendedRevisionText: matched ? null : "Add project-specific language describing how this requirement will be met before the work begins.",
+        reviewerDecision: null,
+        resolved: false,
+        notApplicable: false,
+        origin: "assistant",
+        sortOrder: order++,
+        createdAt: now(),
+        updatedAt: now()
+      });
+    }
+    if (findings.length === 0) {
+      findings.push({
+        id: randomUUID(),
+        reviewId: review.id,
+        title: "Reviewer decision required",
+        findingType: "reviewer_decision",
+        authority: "reviewer_decision",
+        planSourceId: planSource.id,
+        planSourceChunkId: firstPlanChunk?.id ?? null,
+        referenceSourceId: null,
+        referenceSourceChunkId: null,
+        referenceCitationLabel: null,
+        aiExplanation: "No selected reference text was available for a grounded comparison.",
+        reviewerExplanation: "Select extracted reference sources or complete a manual review.",
+        reviewerNotes: null,
+        contractorFacingRecommendation: null,
+        recommendedRevisionText: null,
+        reviewerDecision: null,
+        resolved: false,
+        notApplicable: false,
+        origin: "assistant",
+        sortOrder: 0,
+        createdAt: now(),
+        updatedAt: now()
+      });
+    }
+    return findings;
+  }
+
+  private materializeFinding(input: PlanFindingCreateInput, reviewId: string, origin: "assistant" | "reviewer", timestamp: string): PlanFinding {
+    return {
+      id: randomUUID(),
+      reviewId,
+      title: input.title.trim(),
+      findingType: input.findingType,
+      authority: input.authority,
+      planSourceId: clean(input.planSourceId),
+      planSourceChunkId: clean(input.planSourceChunkId),
+      referenceSourceId: clean(input.referenceSourceId),
+      referenceSourceChunkId: clean(input.referenceSourceChunkId),
+      referenceCitationLabel: clean(input.referenceCitationLabel),
+      aiExplanation: clean(input.aiExplanation),
+      reviewerExplanation: clean(input.reviewerExplanation),
+      reviewerNotes: clean(input.reviewerNotes),
+      contractorFacingRecommendation: clean(input.contractorFacingRecommendation),
+      recommendedRevisionText: clean(input.recommendedRevisionText),
+      reviewerDecision: clean(input.reviewerDecision),
+      resolved: false,
+      notApplicable: false,
+      origin,
+      sortOrder: input.sortOrder ?? 0,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  private buildRecommendationSummary(
+    plan: SafetyPlan,
+    findings: PlanFinding[],
+    references: Array<{ sourceId: string }>
+  ): string {
+    const required = findings.filter((finding) => ["deficiency", "conflict"].includes(finding.findingType));
+    const recommended = findings.filter((finding) => finding.findingType === "revision_recommended");
+    return [
+      `Plan reviewed: ${plan.title}`,
+      `Review basis: ${references.length} selected source${references.length === 1 ? "" : "s"}.`,
+      "",
+      "Required revisions:",
+      ...(required.length ? required.map((finding) => `- ${finding.contractorFacingRecommendation ?? finding.title}`) : ["- None drafted."]),
+      "",
+      "Recommended revisions:",
+      ...(recommended.length ? recommended.map((finding) => `- ${finding.contractorFacingRecommendation ?? finding.title}`) : ["- None drafted."]),
+      "",
+      "Reviewer comments:",
+      "- Pending human review."
+    ].join("\n");
   }
 
   private summarizeReadiness(
@@ -640,6 +1067,24 @@ export class MemoryStore implements AppStore {
       engagementId,
       requirementStatusId,
       evidenceId,
+      eventType,
+      message,
+      actorUserId: userId,
+      createdAt: now()
+    });
+  }
+
+  private addPlanAudit(
+    userId: string,
+    planId: string,
+    reviewId: string | null,
+    eventType: string,
+    message: string
+  ) {
+    this.planAuditEvents.push({
+      id: randomUUID(),
+      planId,
+      reviewId,
       eventType,
       message,
       actorUserId: userId,

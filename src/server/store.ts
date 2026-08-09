@@ -29,6 +29,20 @@ import type {
   ReadinessRequirementUpdateInput,
   SafetyMetric,
   SafetyMetricCreateInput,
+  SafetyPlan,
+  SafetyPlanCreateInput,
+  SafetyPlanDetail,
+  SafetyPlanRevision,
+  SafetyPlanRevisionCreateInput,
+  PlanApprovalInput,
+  PlanFinding,
+  PlanFindingCreateInput,
+  PlanFindingUpdateInput,
+  PlanRecommendationUpdateInput,
+  PlanReview,
+  PlanReviewRunInput,
+  ResubmissionComparison,
+  ResubmissionComparisonCreateInput,
   UserSummary
 } from "../shared/contracts";
 
@@ -95,6 +109,17 @@ export interface AppStore {
   createCompetentPersonEvidence(userId: string, input: CompetentPersonCreateInput): Promise<CompetentPersonEvidence>;
   getContractorReadiness(userId: string, engagementId: string, filters?: { status?: string; category?: string }): Promise<ContractorReadinessDetail | null>;
   listProjectReadinessSummaries(userId: string, projectId: string): Promise<ContractorReadinessSummary[]>;
+  listSafetyPlans(userId: string, engagementId: string): Promise<SafetyPlan[]>;
+  createSafetyPlan(userId: string, input: SafetyPlanCreateInput): Promise<SafetyPlanDetail>;
+  createSafetyPlanRevision(userId: string, planId: string, input: SafetyPlanRevisionCreateInput): Promise<SafetyPlanDetail | null>;
+  getSafetyPlanDetail(userId: string, planId: string): Promise<SafetyPlanDetail | null>;
+  runPlanReview(userId: string, planId: string, input: PlanReviewRunInput): Promise<SafetyPlanDetail>;
+  createPlanFinding(userId: string, input: PlanFindingCreateInput): Promise<PlanFinding>;
+  updatePlanFinding(userId: string, findingId: string, input: PlanFindingUpdateInput): Promise<PlanFinding | null>;
+  deletePlanFinding(userId: string, findingId: string): Promise<void>;
+  updatePlanRecommendation(userId: string, reviewId: string, input: PlanRecommendationUpdateInput): Promise<PlanReview | null>;
+  updatePlanApproval(userId: string, planId: string, input: PlanApprovalInput): Promise<SafetyPlanDetail | null>;
+  createResubmissionComparison(userId: string, planId: string, input: ResubmissionComparisonCreateInput): Promise<ResubmissionComparison[]>;
 }
 
 export class DuplicateEngagementError extends Error {
@@ -118,5 +143,11 @@ export class DuplicateRequirementApplicationError extends Error {
 export class DuplicateEvidenceAssociationError extends Error {
   constructor() {
     super("Source evidence is already attached to this requirement");
+  }
+}
+
+export class DuplicatePlanRevisionSourceError extends Error {
+  constructor() {
+    super("This source is already attached as a revision for the safety plan");
   }
 }
