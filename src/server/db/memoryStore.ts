@@ -2095,7 +2095,7 @@ export class MemoryStore implements AppStore {
       } else if (current.actionName === "propose_update_observation_followup") {
         const observationId = String(current.targetId ?? "");
         const observation = this.observations.get(observationId);
-        if (!observation || JSON.stringify(observation).length !== Number(current.currentState.snapshotLength)) throw new Error("Target changed since proposal was created");
+        if (!observation || observation.updatedAt !== current.currentState.updatedAt) throw new Error("Target changed since proposal was created");
         const updated = await this.updateObservation(userId, observationId, current.proposedChange);
         executedResult = { observationId: updated?.id };
       } else {
@@ -2157,8 +2157,11 @@ export class MemoryStore implements AppStore {
   }
 
   private composeAssistantAnswer(prompt: string, run: AssistantRun): string {
-    const records = run.retrievalManifest.operationalRecords.slice(0, 6).map((record) => `- ${record.type}: ${record.label}`).join("\n") || "- No matching operational records found in the selected scope.";
+    const records = run.retrievalManifest.operationalRecords.slice(0, 12).map((record) => `- ${record.type}: ${record.label}`).join("\n") || "- No matching operational records found in the selected scope.";
     const providerLine = run.errorState ? `\n\nProvider note: ${run.errorState}` : "";
+    const skillLine = run.contextSummary.activeSkill
+      ? `Active Skill: ${run.contextSummary.activeSkill} v${run.contextSummary.activeSkillVersion ?? "unknown"}\nSkill-guided procedure: apply this skill only through registered read, draft, or proposed-write actions.`
+      : "Active Skill: None";
     const suggested = prompt.toLowerCase().includes("meeting")
       ? "\n\nSuggested actions:\n- Draft project meeting brief\n- Review open follow-up\n- Check pending proposed actions"
       : "\n\nSuggested actions:\n- Retrieve sources\n- Draft project meeting brief\n- Propose memory update";
@@ -2169,7 +2172,8 @@ export class MemoryStore implements AppStore {
       `Operational records: ${run.contextSummary.operationalRecords}`,
       `Project Memory: ${run.contextSummary.memoryEntries} entries`,
       `Instructions: ${run.contextSummary.instructions.length}`,
-      `Active Skill: ${run.contextSummary.activeSkill ?? "None"}`,
+      skillLine,
+      "Provider: deterministic local assistant orchestrator; no external conversational provider is configured.",
       "",
       "Grounded summary",
       records,
@@ -2183,10 +2187,24 @@ export class MemoryStore implements AppStore {
     const sourceChunks = await this.searchSourceChunks(userId, { q: query || "safety", projectId: context.projectId, activeOnly: context.retrievalScope !== "global_library" });
     const operationalRecords: Array<{ type: string; id: string; label: string }> = [];
     for (const projectId of projectIds) {
+      const engagements = await this.listProjectEngagements(userId, projectId);
+      const engagementById = new Map(engagements.map((engagement) => [engagement.id, engagement]));
       const observations = await this.listObservations(userId, { projectId });
       const incidents = await this.listIncidents(userId, { projectId });
       const reports = await this.listReports(userId, { projectId });
       const decisions = [...this.projectSafetyDecisions.values()].filter((decision) => decision.projectId === projectId);
+      const readinessStatuses = [...this.requirementStatuses.values()].filter((status) => {
+        const engagement = engagementById.get(status.engagementId);
+        return engagement && (!context.contractorId || engagement.contractorId === context.contractorId) && !["accepted", "not_applicable"].includes(status.status);
+      });
+      const planIds = new Set([...this.safetyPlans.values()].filter((plan) => {
+        const engagement = engagementById.get(plan.engagementId);
+        return plan.projectId === projectId && (!context.contractorId || engagement?.contractorId === context.contractorId);
+      }).map((plan) => plan.id));
+      const reviewIds = new Set([...this.planReviews.values()].filter((review) => planIds.has(review.planId)).map((review) => review.id));
+      const planFindings = [...this.planFindings.values()].filter((finding) => reviewIds.has(finding.reviewId) && !finding.resolved && !finding.notApplicable);
+      readinessStatuses.slice(0, 8).forEach((item) => operationalRecords.push({ type: "readiness", id: item.id, label: `${item.requirement?.title ?? item.requirementId}: ${item.status}` }));
+      planFindings.slice(0, 8).forEach((item) => operationalRecords.push({ type: "plan_finding", id: item.id, label: item.title }));
       observations.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "observation", id: item.id, label: item.derivedSummary ?? item.originalText }));
       incidents.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "incident", id: item.id, label: item.factualDescription }));
       reports.slice(0, 4).forEach((item) => operationalRecords.push({ type: "report", id: item.id, label: item.title }));
@@ -2270,7 +2288,7 @@ export class MemoryStore implements AppStore {
       const observationId = String(input.observationId ?? "");
       const observation = this.observations.get(observationId);
       if (!observation || observation.projectId !== projectId || !(await this.getObservation(userId, observationId))) throw new Error("Observation not found");
-      const proposal = this.createProposal(userId, conversationId, descriptor.name, "observation", observationId, { snapshotLength: JSON.stringify(observation).length }, { followUpStatus: input.followUpStatus ?? "verified_closed", followUpNote: input.followUpNote ?? "Updated by confirmed assistant proposal." }, String(input.rationale ?? "Assistant proposed follow-up update for human review."), evidence);
+      const proposal = this.createProposal(userId, conversationId, descriptor.name, "observation", observationId, { updatedAt: observation.updatedAt, followUpStatus: observation.followUpStatus, followUpNote: observation.followUpNote }, { followUpStatus: input.followUpStatus ?? "verified_closed", followUpNote: input.followUpNote ?? "Updated by confirmed assistant proposal." }, String(input.rationale ?? "Assistant proposed follow-up update for human review."), evidence);
       return { result: { proposalId: proposal.id }, proposal };
     }
     throw new Error("Assistant action handler unavailable");

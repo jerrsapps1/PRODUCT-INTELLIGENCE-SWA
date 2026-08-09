@@ -3247,6 +3247,8 @@ export class PostgresStore implements AppStore {
         const saved = await this.createMemoryEntry(userId, proposal.proposedChange as unknown as MemoryEntryCreateInput);
         executedResult = { memoryId: saved.id };
       } else if (proposal.actionName === "propose_update_observation_followup") {
+        const observation = await this.getObservation(userId, String(proposal.targetId));
+        if (!observation || observation.updatedAt !== proposal.currentState.updatedAt) throw new Error("Target changed since proposal was created");
         const updated = await this.updateObservation(userId, String(proposal.targetId), proposal.proposedChange);
         executedResult = { observationId: updated?.id };
       } else {
@@ -3375,10 +3377,13 @@ export class PostgresStore implements AppStore {
   }
 
   private composeAssistantAnswer(prompt: string, run: AssistantRun): string {
-    const records = run.retrievalManifest.operationalRecords.slice(0, 6).map((record) => `- ${record.type}: ${record.label}`).join("\n") || "- No matching operational records found in the selected scope.";
+    const records = run.retrievalManifest.operationalRecords.slice(0, 12).map((record) => `- ${record.type}: ${record.label}`).join("\n") || "- No matching operational records found in the selected scope.";
     const providerLine = run.errorState ? `\n\nProvider note: ${run.errorState}` : "";
+    const skillLine = run.contextSummary.activeSkill
+      ? `Active Skill: ${run.contextSummary.activeSkill} v${run.contextSummary.activeSkillVersion ?? "unknown"}\nSkill-guided procedure: apply this skill only through registered read, draft, or proposed-write actions.`
+      : "Active Skill: None";
     const suggested = prompt.toLowerCase().includes("meeting") ? "\n\nSuggested actions:\n- Draft project meeting brief\n- Review open follow-up\n- Check pending proposed actions" : "\n\nSuggested actions:\n- Retrieve sources\n- Draft project meeting brief\n- Propose memory update";
-    return ["Context used", `Scope: ${run.contextSummary.scope}`, `Sources: ${run.contextSummary.sources}`, `Operational records: ${run.contextSummary.operationalRecords}`, `Project Memory: ${run.contextSummary.memoryEntries} entries`, `Instructions: ${run.contextSummary.instructions.length}`, `Active Skill: ${run.contextSummary.activeSkill ?? "None"}`, "", "Grounded summary", records, providerLine, suggested].join("\n");
+    return ["Context used", `Scope: ${run.contextSummary.scope}`, `Sources: ${run.contextSummary.sources}`, `Operational records: ${run.contextSummary.operationalRecords}`, `Project Memory: ${run.contextSummary.memoryEntries} entries`, `Instructions: ${run.contextSummary.instructions.length}`, skillLine, "Provider: deterministic local assistant orchestrator; no external conversational provider is configured.", "", "Grounded summary", records, providerLine, suggested].join("\n");
   }
 
   private async buildAssistantRetrievalManifest(userId: string, context: AssistantContext, query: string): Promise<AssistantRetrievalManifest> {
@@ -3389,9 +3394,35 @@ export class PostgresStore implements AppStore {
       const observations = await this.listObservations(userId, { projectId });
       const incidents = await this.listIncidents(userId, { projectId });
       const reports = await this.listReports(userId, { projectId });
+      const readiness = await this.pool.query(
+        `SELECT crs.*, rr.id AS rr_id, rr.project_id, rr.title, rr.description, rr.category, rr.source_id, rr.source_chunk_id,
+                rr.citation_label, rr.required, rr.blocking, rr.due_date, rr.created_at AS rr_created_at, rr.updated_at AS rr_updated_at
+         FROM contractor_requirement_statuses crs
+         JOIN readiness_requirements rr ON rr.id = crs.requirement_id
+         JOIN project_contractor_engagements e ON e.id = crs.engagement_id
+         WHERE e.project_id = $1 AND ($2::uuid IS NULL OR e.contractor_id = $2) AND crs.status NOT IN ('accepted','not_applicable')
+         ORDER BY crs.updated_at DESC
+         LIMIT 8`,
+        [projectId, context.contractorId || null]
+      );
+      const findings = await this.pool.query(
+        `SELECT pf.*
+         FROM plan_findings pf
+         JOIN plan_reviews pr ON pr.id = pf.review_id
+         JOIN safety_plans sp ON sp.id = pr.plan_id
+         JOIN project_contractor_engagements e ON e.id = sp.engagement_id
+         WHERE sp.project_id = $1 AND ($2::uuid IS NULL OR e.contractor_id = $2) AND pf.resolved = false AND pf.not_applicable = false
+         ORDER BY pf.created_at DESC
+         LIMIT 8`,
+        [projectId, context.contractorId || null]
+      );
+      const decisions = await this.pool.query("SELECT * FROM project_safety_decisions WHERE project_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 4", [projectId]);
+      readiness.rows.forEach((row) => operationalRecords.push({ type: "readiness", id: String(row.id), label: `${String(row.title)}: ${String(row.status)}` }));
+      findings.rows.map(mapPlanFinding).forEach((item) => operationalRecords.push({ type: "plan_finding", id: item.id, label: item.title }));
       observations.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "observation", id: item.id, label: item.derivedSummary ?? item.originalText }));
       incidents.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "incident", id: item.id, label: item.factualDescription }));
       reports.slice(0, 4).forEach((item) => operationalRecords.push({ type: "report", id: item.id, label: item.title }));
+      decisions.rows.map((row) => mapProjectSafetyDecision(row)).forEach((item) => operationalRecords.push({ type: "project_decision", id: item.id, label: item.decisionText }));
     }
     const memories = await this.listMemoryEntries(userId, { projectId: context.projectId, activeOnly: true });
     const instructions = await this.listInstructionDocuments(userId, { projectId: context.projectId });
@@ -3436,7 +3467,7 @@ export class PostgresStore implements AppStore {
     if (descriptor.name === "propose_update_observation_followup") {
       const observation = await this.getObservation(userId, String(input.observationId ?? ""));
       if (!observation || observation.projectId !== projectId) throw new Error("Observation not found");
-      const proposal = await this.createProposal(userId, conversationId, descriptor.name, "observation", observation.id, { snapshotLength: JSON.stringify(observation).length }, { followUpStatus: input.followUpStatus ?? "verified_closed", followUpNote: input.followUpNote ?? "Updated by confirmed assistant proposal." }, String(input.rationale ?? "Assistant proposed follow-up update for human review."), evidence);
+      const proposal = await this.createProposal(userId, conversationId, descriptor.name, "observation", observation.id, { updatedAt: observation.updatedAt, followUpStatus: observation.followUpStatus, followUpNote: observation.followUpNote }, { followUpStatus: input.followUpStatus ?? "verified_closed", followUpNote: input.followUpNote ?? "Updated by confirmed assistant proposal." }, String(input.rationale ?? "Assistant proposed follow-up update for human review."), evidence);
       return { result: { proposalId: proposal.id }, proposal };
     }
     throw new Error("Assistant action handler unavailable");

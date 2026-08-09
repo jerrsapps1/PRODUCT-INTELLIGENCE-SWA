@@ -1,6 +1,6 @@
 # Phase 8 - Assistant, Memory & Skills
 
-Status: Implemented and verified. Phase 9 Historical Intelligence has not begun.
+Status: Implemented and closure-verified. Phase 9 Historical Intelligence has not begun.
 
 ## Objective
 
@@ -34,7 +34,8 @@ No autonomous/background agents, automatic authoritative writes, automatic memor
 - DRAFT actions for project meeting briefs and contractor follow-up text.
 - PROPOSED_WRITE actions for memory save and observation follow-up update.
 - Human confirm/reject/edit proposal lifecycle with execution through existing domain validation.
-- Deterministic assistant orchestration with provider-failure transparency.
+- Deterministic structured assistant orchestration with provider-failure transparency. Capability classification is **B - Deterministic Structured Assistant**.
+- Stale-target protection for observation follow-up proposals using captured target update state at proposal creation.
 - Prompt-injection/source-content boundary tests.
 - Assistant console and workbench in the existing responsive three-panel workspace.
 - PostgreSQL schema migration `008_assistant_memory_skills.sql`.
@@ -42,11 +43,12 @@ No autonomous/background agents, automatic authoritative writes, automatic memor
 ## Verification
 
 - `npm.cmd run typecheck` passed.
-- `npm.cmd test` passed: 15 tests.
+- `npm.cmd test` passed: 16 tests.
 - `npm.cmd run build` passed.
 - `npm.cmd audit --audit-level=moderate` passed with 0 vulnerabilities.
 - Browser smoke verified desktop assistant shell, conversation creation, message send, context transparency, and assistant workbench rendering.
 - Responsive CSS breakpoints and touch tab shell remain present for tablet/iPad behavior.
+- Closure test verified a synthetic Monday project meeting context with open readiness, unresolved plan finding, positive observation, observation follow-up, incident follow-up, active project decision, recent report, Project Memory, Project Instruction, and active Skill.
 
 ## Boundaries
 
@@ -59,12 +61,12 @@ No Phase 9 historical intelligence, autonomous/background agents, automatic auth
 | Doctrine synchronization | Completed | D-006 through D-009 and Phase 8 architecture/workflow docs are repo-local. |
 | Assistant conversations | Completed | Project-linked conversations, messages, context, runs, and reopen APIs/UI. |
 | Retrieval/context scope | Completed | Current Project default, contractor context, selected-project/other scopes, manifests. |
-| Context transparency | Completed | Assistant responses show scope, source counts, record counts, memory, instructions, active skill. |
+| Context transparency | Completed | Assistant responses show scope, source counts, record counts, memory, instructions, active skill/version, and deterministic provider status. |
 | Memory | Completed | Global/project memory CRUD and proposal-confirm path. |
 | Instructions | Completed | Global/project Markdown instruction save with versioning. |
 | Skills | Completed | Guided fields, Markdown, scope, active status, activation, versioning. |
 | Action registry | Completed | READ, DRAFT, PROPOSED_WRITE registry and invocation API. |
-| Proposed writes | Completed | Proposal edit/confirm/reject and execution through domain methods. |
+| Proposed writes | Completed | Proposal edit/confirm/reject and execution through domain methods, with stale-target conflict failure for changed observations. |
 | Human confirmation | Completed | Assistant cannot self-confirm; execution requires authenticated confirm endpoint. |
 | Audit/provenance | Completed | Runs, retrieval manifests, messages, proposals, execution results persisted. |
 | Security boundaries | Completed | No raw SQL/unregistered action; prompt-injection source text tested as data. |

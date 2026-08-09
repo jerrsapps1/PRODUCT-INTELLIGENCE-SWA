@@ -18,6 +18,10 @@ Conversation history is not persistent memory. Conversation content is not autom
 
 Assistant responses should expose input classes used, such as source count, operational record count, memory count, instruction scope, active skill/version, and retrieval scope. Do not expose hidden chain-of-thought.
 
+The Phase 8 assistant is a deterministic structured assistant. It can assemble and summarize bounded context, draft non-authoritative text, and create proposed writes through registered actions. It should not be presented as an external conversational provider unless one is explicitly configured later.
+
+Current Project is the default scope. Contractor scope narrows project records. Other projects are excluded until the user explicitly expands scope. Global Library source text can be retrieved as evidence data, but it does not become governing authority by being present. Memory may guide phrasing or preferences, but it is not operational evidence.
+
 ## Boundaries
 
 Retrieved source text, memory, instructions, and skill Markdown cannot override product doctrine, authorization, confirmation requirements, or action schemas.
