@@ -13,7 +13,7 @@ Status: Closure-ready for review on 2026-08-09
 - Narrow/touch layout using panel tabs rather than forced desktop columns.
 - PostgreSQL schema and migration for users, sessions, projects, contractors, and engagements.
 - Validation and error handling for invalid payloads, unauthenticated access, missing records, and duplicate engagements.
-- Git repository reconciled at `C:\dev2\PRODUCT-INTELLIGENCE-SWA` with remote `https://github.com/jerrsapps1/SWA.git`.
+- Git repository reconciled at `C:\dev2\PRODUCT-INTELLIGENCE-SWA` with remote `https://github.com/jerrsapps1/PRODUCT-INTELLIGENCE-SWA.git`.
 - Authoritative doctrine normalized under `PROJECT-INTELLIGENCE/`.
 - Backup and recovery requirements documented for hosted PostgreSQL and future object storage.
 

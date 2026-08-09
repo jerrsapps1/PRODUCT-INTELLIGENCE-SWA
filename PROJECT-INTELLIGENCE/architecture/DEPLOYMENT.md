@@ -4,7 +4,7 @@ Status: Phase 1 foundation documented; hosted infrastructure pending deployment 
 
 ## Source of Truth
 
-- GitHub repository: `https://github.com/jerrsapps1/SWA.git`
+- GitHub repository: `https://github.com/jerrsapps1/PRODUCT-INTELLIGENCE-SWA.git`
 - Local project root: `C:\dev2\PRODUCT-INTELLIGENCE-SWA`
 - Branch: `main`
 

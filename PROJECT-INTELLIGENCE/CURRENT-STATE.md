@@ -6,7 +6,7 @@ Status date: 2026-08-09
 
 - Product doctrine remains approved as V1 governing direction.
 - Phase 1 foundation implementation is complete for closure review and is limited to the approved foundation scope.
-- GitHub repository `https://github.com/jerrsapps1/SWA.git` on branch `main` is established as the implementation source of truth.
+- GitHub repository `https://github.com/jerrsapps1/PRODUCT-INTELLIGENCE-SWA.git` on branch `main` is established as the implementation source of truth.
 - Local project root is `C:\dev2\PRODUCT-INTELLIGENCE-SWA`; no nested Git repository remains.
 - The repository now contains a TypeScript full-stack application foundation with a React responsive/PWA client and Node HTTP API.
 - PostgreSQL is the production structured persistence target; browser localStorage is not used as source-of-truth persistence.
