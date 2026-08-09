@@ -1011,6 +1011,146 @@ describe("Phase 1 API", () => {
     expect(sourceStillExists.status).toBe(200);
   });
 
+  it("generates, edits, finalizes, exports, and archives evidence-grounded safety reports", async () => {
+    const unauthenticated = await fetch(`${baseUrl}/api/reports?projectId=00000000-0000-0000-0000-000000000000`);
+    expect(unauthenticated.status).toBe(401);
+
+    const cookie = await login();
+    const project = await createProject(cookie, "Phase 7 Reporting Project");
+    const contractor = await createContractor(cookie, "Report Steel");
+    const engagement = await createEngagement(cookie, project.id, contractor.id, "Steel erection");
+    const source = await uploadTextSource(cookie, "Reporting Plan Source", "Fall protection and incident follow-up requirements.");
+
+    const requirement = await json<{ requirement: { id: string } }>(await fetch(`${baseUrl}/api/projects/${project.id}/readiness-requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ title: "Competent person letter", category: "Personnel", required: true, blocking: true })
+    }));
+    await fetch(`${baseUrl}/api/engagements/${engagement.id}/requirements/apply`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ requirementId: requirement.requirement.id, plannedMobilizationDate: "2026-08-05" })
+    });
+
+    const plan = await json<{ safetyPlan: { plan: { id: string } } }>(await fetch(`${baseUrl}/api/engagements/${engagement.id}/safety-plans`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        engagementId: engagement.id,
+        title: "Steel SSSP",
+        planType: "site_specific_safety_plan",
+        sourceId: source.id,
+        revisionIdentifier: "Rev 0",
+        submittedDate: "2026-08-01"
+      })
+    }));
+
+    const oldObservation = await json<{ observation: { id: string } }>(await fetch(`${baseUrl}/api/observations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ projectId: project.id, engagementId: engagement.id, originalText: "Open scaffold access follow-up.", observedAt: "2026-08-01T10:00:00.000Z", classification: "follow_up_required", followUpNeeded: true })
+    }));
+    const periodObservation = await json<{ observation: { id: string } }>(await fetch(`${baseUrl}/api/observations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ projectId: project.id, engagementId: engagement.id, originalText: "Crew used proper tie-off.", observedAt: "2026-08-09T10:00:00.000Z", classification: "positive" })
+    }));
+    const oldIncident = await json<{ incident: { id: string } }>(await fetch(`${baseUrl}/api/incidents`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ projectId: project.id, engagementId: engagement.id, incidentDateTime: "2026-08-01T12:00:00.000Z", factualDescription: "Prior open near miss pending contractor response.", incidentCategory: "near_miss" })
+    }));
+    const periodIncident = await json<{ incident: { id: string } }>(await fetch(`${baseUrl}/api/incidents`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ projectId: project.id, engagementId: engagement.id, incidentDateTime: "2026-08-09T12:00:00.000Z", factualDescription: "Material cart struck barricade; no injury reported.", incidentCategory: "property_damage" })
+    }));
+    await fetch(`${baseUrl}/api/incidents/${periodIncident.incident.id}/project-decisions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ decisionText: "Require spotter for material cart movement.", appliesToScope: "Material handling", effectiveDate: "2026-08-09", status: "active" })
+    });
+
+    const invalid = await fetch(`${baseUrl}/api/reports`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ projectId: project.id, reportType: "daily", format: "narrative", periodStart: "2026-08-10", periodEnd: "2026-08-09" })
+    });
+    expect(invalid.status).toBe(400);
+
+    const createdReports = [];
+    for (const reportType of ["daily", "weekly", "monthly", "custom"]) {
+      const response = await fetch(`${baseUrl}/api/reports`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          projectId: project.id,
+          reportType,
+          format: reportType === "weekly" ? "structured" : "narrative",
+          periodStart: "2026-08-09",
+          periodEnd: "2026-08-09",
+          title: `${reportType} report`,
+          manualInputs: { projectActivity: "Steel erection continued.", plannedWork: "Continue deck edge protection.", safetyEmphasis: "Tie-off verification." }
+        })
+      });
+      expect(response.status).toBe(201);
+      createdReports.push((await json<{ report: { id: string } }>(response)).report);
+    }
+
+    const generated = await json<{ report: { id: string; generationStatus: string; currentRevision: { id: string; contentMarkdown: string; evidenceManifest: any }; revisions: unknown[] } }>(await fetch(`${baseUrl}/api/reports/${createdReports[0].id}/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ preserveExisting: true })
+    }));
+    expect(generated.report.generationStatus).toBe("ready");
+    expect(generated.report.currentRevision.contentMarkdown).toContain("Steel erection continued.");
+    expect(generated.report.currentRevision.contentMarkdown).toContain("Material cart struck barricade");
+    expect(generated.report.currentRevision.evidenceManifest.newDuringPeriod.observationIds).toContain(periodObservation.observation.id);
+    expect(generated.report.currentRevision.evidenceManifest.carriedOpen.observationIds).toContain(oldObservation.observation.id);
+    expect(generated.report.currentRevision.evidenceManifest.newDuringPeriod.incidentIds).toContain(periodIncident.incident.id);
+    expect(generated.report.currentRevision.evidenceManifest.carriedOpen.incidentIds).toContain(oldIncident.incident.id);
+
+    const edited = await fetch(`${baseUrl}/api/report-revisions/${generated.report.currentRevision.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ contentMarkdown: `${generated.report.currentRevision.contentMarkdown}\nReviewer edit retained.` })
+    });
+    expect(edited.status).toBe(200);
+
+    const regenerated = await json<{ report: { revisions: unknown[] } }>(await fetch(`${baseUrl}/api/reports/${createdReports[0].id}/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ preserveExisting: true })
+    }));
+    expect(regenerated.report.revisions).toHaveLength(2);
+
+    const previousProvider = process.env.REPORT_AI_PROVIDER;
+    process.env.REPORT_AI_PROVIDER = "fail-test";
+    const fallback = await json<{ report: { errorState: string | null; currentRevision: { contentMarkdown: string } } }>(await fetch(`${baseUrl}/api/reports/${createdReports[1].id}/generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ preserveExisting: true })
+    }));
+    process.env.REPORT_AI_PROVIDER = previousProvider;
+    expect(fallback.report.errorState).toContain("Configured report AI test failure");
+    expect(fallback.report.currentRevision.contentMarkdown).toContain("deterministic fallback");
+
+    const finalized = await fetch(`${baseUrl}/api/reports/${createdReports[0].id}/finalize`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ reviewerNote: "Reviewed." })
+    });
+    expect(finalized.status).toBe(200);
+
+    const archive = await json<{ reports: Array<{ id: string; status: string }> }>(await fetch(`${baseUrl}/api/reports?projectId=${project.id}&status=finalized`, { headers: { cookie } }));
+    expect(archive.reports).toContainEqual(expect.objectContaining({ id: createdReports[0].id, status: "finalized" }));
+
+    const exportResponse = await fetch(`${baseUrl}/api/reports/${createdReports[0].id}/export`, { headers: { cookie } });
+    expect(exportResponse.status).toBe(200);
+    expect(exportResponse.headers.get("content-type")).toContain("text/html");
+    expect(await exportResponse.text()).toContain("Daily Safety Report");
+  });
+
   async function login(): Promise<string> {
     const loginResponse = await fetch(`${baseUrl}/api/auth/login`, {
       method: "POST",

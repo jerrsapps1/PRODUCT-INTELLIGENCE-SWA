@@ -79,6 +79,20 @@ import type {
   IncidentUpdateInput,
   ProjectSafetyDecision,
   ProjectSafetyDecisionInput,
+  ReportCreateInput,
+  ReportExport,
+  ReportEvidenceManifest,
+  ReportFinalizeInput,
+  ReportGenerateInput,
+  ReportManualInputs,
+  ReportRevisionUpdateInput,
+  ReportScopeInput,
+  ReportSearchInput,
+  ReportUpdateInput,
+  SafetyReport,
+  SafetyReportAuditEvent,
+  SafetyReportDetail,
+  SafetyReportRevision,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -102,6 +116,7 @@ import {
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
 import { runIncidentAssistant } from "../incidentAssistant";
+import { draftFallbackSafetyReport, draftSafetyReport, type ReportEvidenceContext } from "../reportAssistant";
 
 function now(): string {
   return new Date().toISOString();
@@ -109,6 +124,61 @@ function now(): string {
 
 function clean(value: string | undefined): string | null {
   return value && value.trim() ? value.trim() : null;
+}
+
+function titleCase(value: string): string {
+  return value.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ");
+}
+
+function normalizeReportScope(scope: Partial<ReportScopeInput> | undefined): ReportScopeInput {
+  return {
+    includeContractors: scope?.includeContractors ?? true,
+    includeReadiness: scope?.includeReadiness ?? true,
+    includePlanReview: scope?.includePlanReview ?? true,
+    includeObservations: scope?.includeObservations ?? true,
+    includeIncidents: scope?.includeIncidents ?? true,
+    includeOpenFollowUp: scope?.includeOpenFollowUp ?? true,
+    includeProjectDecisions: scope?.includeProjectDecisions ?? true,
+    includeUpcomingFocus: scope?.includeUpcomingFocus ?? true
+  };
+}
+
+function normalizeManualInputs(inputs: Partial<ReportManualInputs> | undefined): ReportManualInputs {
+  return {
+    projectActivity: inputs?.projectActivity ?? "",
+    meetingNote: inputs?.meetingNote ?? "",
+    plannedWork: inputs?.plannedWork ?? "",
+    weather: inputs?.weather ?? "",
+    visitorAuditNote: inputs?.visitorAuditNote ?? "",
+    milestone: inputs?.milestone ?? "",
+    safetyEmphasis: inputs?.safetyEmphasis ?? "",
+    otherContext: inputs?.otherContext ?? ""
+  };
+}
+
+function emptyReportManifest(periodStart: string, periodEnd: string): ReportEvidenceManifest {
+  return {
+    generatedAt: now(),
+    periodStart,
+    periodEnd,
+    newDuringPeriod: { observationIds: [], incidentIds: [], planReviewIds: [], readinessStatusIds: [], projectDecisionIds: [] },
+    carriedOpen: { observationIds: [], incidentIds: [], planReviewIds: [], readinessStatusIds: [], projectDecisionIds: [] },
+    sourceIds: []
+  };
+}
+
+function reportHtml(detail: SafetyReportDetail): string {
+  const revision = detail.currentRevision;
+  const body = escapeHtml(revision?.contentMarkdown ?? "").split("\n").map((line) => line ? `<p>${line}</p>` : "").join("\n");
+  return `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>${escapeHtml(detail.title)}</title><style>body{font-family:Arial,sans-serif;max-width:900px;margin:32px auto;line-height:1.5;color:#17202a}p{white-space:pre-wrap}h1{font-size:28px}header{border-bottom:1px solid #d0d7de;margin-bottom:24px}</style></head>
+<body><header><h1>${escapeHtml(detail.title)}</h1><p>${escapeHtml(detail.reportType)} | ${escapeHtml(detail.periodStart)} to ${escapeHtml(detail.periodEnd)} | ${escapeHtml(detail.status)}</p></header>${body}</body>
+</html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] as string);
 }
 
 export class MemoryStore implements AppStore {
@@ -147,6 +217,9 @@ export class MemoryStore implements AppStore {
   private incidentFollowUps = new Map<string, IncidentFollowUp>();
   private incidentLinks = new Map<string, IncidentLink>();
   private incidentAuditEvents: IncidentAuditEvent[] = [];
+  private reports = new Map<string, SafetyReport>();
+  private reportRevisions = new Map<string, SafetyReportRevision>();
+  private reportAuditEvents: SafetyReportAuditEvent[] = [];
 
   async migrate(): Promise<void> {}
 
@@ -1556,6 +1629,269 @@ export class MemoryStore implements AppStore {
     });
     this.addIncidentAudit(userId, incidentId, "incident_reopened", input.reason.trim());
     return this.getIncident(userId, incidentId);
+  }
+
+  async listReports(userId: string, filters: ReportSearchInput): Promise<SafetyReport[]> {
+    if (!(await this.getProject(userId, filters.projectId))) return [];
+    return [...this.reports.values()]
+      .filter((report) => report.projectId === filters.projectId)
+      .filter((report) => !filters.reportType || report.reportType === filters.reportType)
+      .filter((report) => !filters.status || report.status === filters.status)
+      .filter((report) => !filters.dateFrom || report.periodEnd >= filters.dateFrom)
+      .filter((report) => !filters.dateTo || report.periodStart <= filters.dateTo)
+      .sort((a, b) => b.periodEnd.localeCompare(a.periodEnd) || b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async createReport(userId: string, input: ReportCreateInput): Promise<SafetyReportDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    const timestamp = now();
+    const report: SafetyReport = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      reportType: input.reportType,
+      format: input.format,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      title: clean(input.title) ?? `${titleCase(input.reportType)} Safety Report`,
+      status: "draft",
+      generationStatus: "not_generated",
+      generationProvider: null,
+      generationModel: null,
+      errorState: null,
+      scope: normalizeReportScope(input.scope),
+      manualInputs: normalizeManualInputs(input.manualInputs),
+      currentRevisionId: null,
+      createdByUserId: userId,
+      finalizedAt: null,
+      finalizedByUserId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.reports.set(report.id, report);
+    this.addReportAudit(userId, report.id, null, "report_created", "Created safety report shell");
+    return this.buildReportDetail(report);
+  }
+
+  async getReport(userId: string, reportId: string): Promise<SafetyReportDetail | null> {
+    const report = this.reports.get(reportId);
+    if (!report || !(await this.getProject(userId, report.projectId))) return null;
+    return this.buildReportDetail(report);
+  }
+
+  async updateReport(userId: string, reportId: string, input: ReportUpdateInput): Promise<SafetyReportDetail | null> {
+    const current = this.reports.get(reportId);
+    if (!current || !(await this.getProject(userId, current.projectId))) return null;
+    const updated: SafetyReport = {
+      ...current,
+      title: input.title === undefined ? current.title : clean(input.title) ?? current.title,
+      scope: input.scope ? normalizeReportScope(input.scope) : current.scope,
+      manualInputs: input.manualInputs ? normalizeManualInputs(input.manualInputs) : current.manualInputs,
+      updatedAt: now()
+    };
+    this.reports.set(reportId, updated);
+    this.addReportAudit(userId, reportId, null, "report_updated", "Updated report metadata, scope, or manual inputs");
+    return this.buildReportDetail(updated);
+  }
+
+  async generateReportDraft(userId: string, reportId: string, input: ReportGenerateInput): Promise<SafetyReportDetail | null> {
+    const report = this.reports.get(reportId);
+    if (!report || !(await this.getProject(userId, report.projectId))) return null;
+    this.reports.set(reportId, { ...report, generationStatus: "generating", errorState: null, updatedAt: now() });
+    const context = await this.buildReportEvidenceContext(userId, report);
+    let draft;
+    try {
+      draft = await draftSafetyReport(context);
+    } catch (error) {
+      draft = draftFallbackSafetyReport(context, error);
+    }
+    const latest = this.reports.get(reportId) as SafetyReport;
+    const existing = latest.currentRevisionId ? this.reportRevisions.get(latest.currentRevisionId) ?? null : null;
+    const replaceExisting = existing && !input.preserveExisting && existing.status === "draft";
+    const revision: SafetyReportRevision = {
+      id: replaceExisting ? existing.id : randomUUID(),
+      reportId,
+      revisionNumber: replaceExisting ? existing.revisionNumber : this.nextReportRevisionNumber(reportId),
+      status: "draft",
+      title: latest.title,
+      contentMarkdown: draft.contentMarkdown,
+      contentJson: draft.contentJson,
+      evidenceManifest: context.manifest,
+      createdByUserId: userId,
+      createdAt: replaceExisting ? existing.createdAt : now(),
+      finalizedAt: null,
+      finalizedByUserId: null
+    };
+    this.reportRevisions.set(revision.id, revision);
+    const updated: SafetyReport = {
+      ...latest,
+      status: "draft",
+      generationStatus: "ready",
+      generationProvider: draft.provider,
+      generationModel: draft.model,
+      errorState: draft.errorState,
+      currentRevisionId: revision.id,
+      finalizedAt: null,
+      finalizedByUserId: null,
+      updatedAt: now()
+    };
+    this.reports.set(reportId, updated);
+    this.addReportAudit(userId, reportId, revision.id, draft.errorState ? "report_generated_with_fallback" : "report_generated", "Generated editable report draft from evidence manifest");
+    return this.buildReportDetail(updated);
+  }
+
+  async updateReportRevision(userId: string, revisionId: string, input: ReportRevisionUpdateInput): Promise<SafetyReportRevision | null> {
+    const current = this.reportRevisions.get(revisionId);
+    if (!current) return null;
+    const report = this.reports.get(current.reportId);
+    if (!report || !(await this.getProject(userId, report.projectId))) return null;
+    const base = current.status === "finalized" ? { ...current, id: randomUUID(), revisionNumber: this.nextReportRevisionNumber(report.id), status: "draft" as const, createdAt: now(), finalizedAt: null, finalizedByUserId: null } : current;
+    const updated: SafetyReportRevision = {
+      ...base,
+      title: input.title === undefined ? base.title : clean(input.title) ?? base.title,
+      contentMarkdown: input.contentMarkdown ?? base.contentMarkdown,
+      contentJson: input.contentJson ?? base.contentJson
+    };
+    this.reportRevisions.set(updated.id, updated);
+    this.reports.set(report.id, { ...report, status: "draft", currentRevisionId: updated.id, updatedAt: now(), finalizedAt: null, finalizedByUserId: null });
+    this.addReportAudit(userId, report.id, updated.id, "revision_edited", current.status === "finalized" ? "Created draft revision from finalized report edits" : "Edited report draft revision");
+    return updated;
+  }
+
+  async finalizeReport(userId: string, reportId: string, input: ReportFinalizeInput): Promise<SafetyReportDetail | null> {
+    const report = this.reports.get(reportId);
+    if (!report || !(await this.getProject(userId, report.projectId)) || !report.currentRevisionId) return null;
+    const revision = this.reportRevisions.get(report.currentRevisionId);
+    if (!revision) return null;
+    const timestamp = now();
+    this.reportRevisions.set(revision.id, { ...revision, status: "finalized", finalizedAt: timestamp, finalizedByUserId: userId });
+    const updated: SafetyReport = { ...report, status: "finalized", finalizedAt: timestamp, finalizedByUserId: userId, updatedAt: timestamp };
+    this.reports.set(reportId, updated);
+    this.addReportAudit(userId, reportId, revision.id, "report_finalized", clean(input.reviewerNote) ?? "Finalized safety report");
+    return this.buildReportDetail(updated);
+  }
+
+  async createReportRevision(userId: string, reportId: string): Promise<SafetyReportDetail | null> {
+    const report = this.reports.get(reportId);
+    if (!report || !(await this.getProject(userId, report.projectId))) return null;
+    const current = report.currentRevisionId ? this.reportRevisions.get(report.currentRevisionId) : null;
+    const revision: SafetyReportRevision = {
+      id: randomUUID(),
+      reportId,
+      revisionNumber: this.nextReportRevisionNumber(reportId),
+      status: "draft",
+      title: current?.title ?? report.title,
+      contentMarkdown: current?.contentMarkdown ?? "",
+      contentJson: current?.contentJson ?? {},
+      evidenceManifest: current?.evidenceManifest ?? emptyReportManifest(report.periodStart, report.periodEnd),
+      createdByUserId: userId,
+      createdAt: now(),
+      finalizedAt: null,
+      finalizedByUserId: null
+    };
+    this.reportRevisions.set(revision.id, revision);
+    const updated = { ...report, status: "draft" as const, currentRevisionId: revision.id, finalizedAt: null, finalizedByUserId: null, updatedAt: now() };
+    this.reports.set(reportId, updated);
+    this.addReportAudit(userId, reportId, revision.id, "revision_created", "Created editable report revision");
+    return this.buildReportDetail(updated);
+  }
+
+  async exportReport(userId: string, reportId: string): Promise<ReportExport | null> {
+    const detail = await this.getReport(userId, reportId);
+    if (!detail || !detail.currentRevision) return null;
+    return {
+      filename: `${detail.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "safety-report"}.html`,
+      contentType: "text/html; charset=utf-8",
+      content: reportHtml(detail)
+    };
+  }
+
+  private async buildReportEvidenceContext(userId: string, report: SafetyReport): Promise<ReportEvidenceContext> {
+    const project = (await this.getProject(userId, report.projectId)) as Project;
+    const engagements = await this.listProjectEngagements(userId, report.projectId);
+    const observations = [...this.observations.values()].filter((item) => item.projectId === report.projectId);
+    const incidents = [...this.incidents.values()].filter((item) => item.projectId === report.projectId);
+    const inPeriodObservations = observations.filter((item) => item.observedAt.slice(0, 10) >= report.periodStart && item.observedAt.slice(0, 10) <= report.periodEnd);
+    const carriedObservations = observations.filter((item) => item.observedAt.slice(0, 10) < report.periodStart && item.followUpStatus === "needed");
+    const inPeriodIncidents = incidents.filter((item) => item.incidentDateTime.slice(0, 10) >= report.periodStart && item.incidentDateTime.slice(0, 10) <= report.periodEnd);
+    const carriedIncidents = incidents.filter((item) => item.incidentDateTime.slice(0, 10) < report.periodStart && item.oversightStatus !== "closed");
+    const safetyPlans = [...this.safetyPlans.values()].filter((plan) => plan.projectId === report.projectId);
+    const planReviews = [...this.planReviews.values()].filter((review) => safetyPlans.some((plan) => plan.id === review.planId));
+    const readinessStatuses = [...this.requirementStatuses.values()].filter((status) => {
+      const engagement = this.engagements.get(status.engagementId);
+      return engagement?.projectId === report.projectId;
+    });
+    const projectDecisions = [...this.projectSafetyDecisions.values()].filter((decision) => decision.projectId === report.projectId && decision.status === "active");
+    const inPeriodDecisions = projectDecisions.filter((decision) => decision.effectiveDate ? decision.effectiveDate >= report.periodStart && decision.effectiveDate <= report.periodEnd : decision.createdAt.slice(0, 10) >= report.periodStart && decision.createdAt.slice(0, 10) <= report.periodEnd);
+    const carriedDecisions = projectDecisions.filter((decision) => !inPeriodDecisions.some((item) => item.id === decision.id));
+    const sourceIds = new Set<string>();
+    safetyPlans.forEach((plan) => {
+      if (plan.currentRevisionId) {
+        const revision = this.planRevisions.get(plan.currentRevisionId);
+        if (revision) sourceIds.add(revision.sourceId);
+      }
+    });
+    [...this.incidentAttachments.values()]
+      .filter((attachment) => incidents.some((incident) => incident.id === attachment.incidentId))
+      .forEach((attachment) => sourceIds.add(attachment.sourceId));
+    [...this.observationReferences.values()]
+      .filter((link) => observations.some((observation) => observation.id === link.observationId))
+      .forEach((link) => sourceIds.add(link.sourceId));
+    const manifest: ReportEvidenceManifest = {
+      generatedAt: now(),
+      periodStart: report.periodStart,
+      periodEnd: report.periodEnd,
+      newDuringPeriod: {
+        observationIds: inPeriodObservations.map((item) => item.id),
+        incidentIds: inPeriodIncidents.map((item) => item.id),
+        planReviewIds: planReviews.filter((review) => review.createdAt.slice(0, 10) >= report.periodStart && review.createdAt.slice(0, 10) <= report.periodEnd).map((review) => review.id),
+        readinessStatusIds: readinessStatuses.filter((status) => status.updatedAt.slice(0, 10) >= report.periodStart && status.updatedAt.slice(0, 10) <= report.periodEnd).map((status) => status.id),
+        projectDecisionIds: inPeriodDecisions.map((decision) => decision.id)
+      },
+      carriedOpen: {
+        observationIds: report.scope.includeOpenFollowUp ? carriedObservations.map((item) => item.id) : [],
+        incidentIds: report.scope.includeOpenFollowUp ? carriedIncidents.map((item) => item.id) : [],
+        planReviewIds: planReviews.filter((review) => review.createdAt.slice(0, 10) < report.periodStart && review.status !== "approved").map((review) => review.id),
+        readinessStatusIds: readinessStatuses.filter((status) => status.updatedAt.slice(0, 10) < report.periodStart && !["accepted", "not_applicable"].includes(status.status)).map((status) => status.id),
+        projectDecisionIds: carriedDecisions.map((decision) => decision.id)
+      },
+      sourceIds: [...sourceIds]
+    };
+    return {
+      project,
+      reportType: report.reportType,
+      format: report.format,
+      periodStart: report.periodStart,
+      periodEnd: report.periodEnd,
+      scope: report.scope,
+      manualInputs: report.manualInputs,
+      engagements,
+      observations: inPeriodObservations.map((item) => this.withObservationContext(item)),
+      carriedObservations: carriedObservations.map((item) => this.withObservationContext(item)),
+      incidents: inPeriodIncidents.map((item) => this.withIncidentContext(item)),
+      carriedIncidents: carriedIncidents.map((item) => this.withIncidentContext(item)),
+      safetyPlans,
+      readinessStatuses,
+      projectDecisions,
+      manifest
+    };
+  }
+
+  private nextReportRevisionNumber(reportId: string): number {
+    return Math.max(0, ...[...this.reportRevisions.values()].filter((revision) => revision.reportId === reportId).map((revision) => revision.revisionNumber)) + 1;
+  }
+
+  private buildReportDetail(report: SafetyReport): SafetyReportDetail {
+    const revisions = [...this.reportRevisions.values()].filter((revision) => revision.reportId === report.id).sort((a, b) => b.revisionNumber - a.revisionNumber);
+    return {
+      ...report,
+      currentRevision: report.currentRevisionId ? this.reportRevisions.get(report.currentRevisionId) ?? null : null,
+      revisions,
+      auditEvents: this.reportAuditEvents.filter((event) => event.reportId === report.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    };
+  }
+
+  private addReportAudit(userId: string, reportId: string, revisionId: string | null, eventType: string, message: string) {
+    this.reportAuditEvents.push({ id: randomUUID(), reportId, revisionId, eventType, message, actorUserId: userId, createdAt: now() });
   }
 
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {

@@ -65,6 +65,10 @@ export const incidentRecommendationTypes = ["accept_contractor_actions", "reques
 export const projectDecisionStatuses = ["draft", "active", "superseded", "closed"] as const;
 export const incidentFollowUpStatuses = ["needed", "verified", "not_applicable"] as const;
 export const incidentAiStatuses = ["not_run", "processing", "ready", "failed"] as const;
+export const reportTypes = ["daily", "weekly", "monthly", "custom"] as const;
+export const reportFormats = ["narrative", "structured"] as const;
+export const reportStatuses = ["draft", "finalized"] as const;
+export const reportGenerationStatuses = ["not_generated", "generating", "ready", "failed"] as const;
 
 export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, "Project name is required").max(160),
@@ -445,6 +449,69 @@ export const incidentReopenSchema = z.object({
   reason: z.string().trim().min(1).max(4000)
 });
 
+export const reportScopeSchema = z.object({
+  includeContractors: z.boolean().default(true),
+  includeReadiness: z.boolean().default(true),
+  includePlanReview: z.boolean().default(true),
+  includeObservations: z.boolean().default(true),
+  includeIncidents: z.boolean().default(true),
+  includeOpenFollowUp: z.boolean().default(true),
+  includeProjectDecisions: z.boolean().default(true),
+  includeUpcomingFocus: z.boolean().default(true)
+});
+
+export const reportManualInputsSchema = z.object({
+  projectActivity: z.string().trim().max(4000).optional().or(z.literal("")),
+  meetingNote: z.string().trim().max(4000).optional().or(z.literal("")),
+  plannedWork: z.string().trim().max(4000).optional().or(z.literal("")),
+  weather: z.string().trim().max(1000).optional().or(z.literal("")),
+  visitorAuditNote: z.string().trim().max(4000).optional().or(z.literal("")),
+  milestone: z.string().trim().max(4000).optional().or(z.literal("")),
+  safetyEmphasis: z.string().trim().max(4000).optional().or(z.literal("")),
+  otherContext: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
+export const reportCreateSchema = z.object({
+  projectId: z.string().uuid(),
+  reportType: z.enum(reportTypes),
+  format: z.enum(reportFormats),
+  periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  title: z.string().trim().max(220).optional().or(z.literal("")),
+  scope: reportScopeSchema.default({}),
+  manualInputs: reportManualInputsSchema.default({})
+}).refine((value) => value.periodStart <= value.periodEnd, {
+  message: "Report period start must be on or before period end"
+});
+
+export const reportSearchSchema = z.object({
+  projectId: z.string().uuid(),
+  reportType: z.enum(reportTypes).optional(),
+  status: z.enum(reportStatuses).optional(),
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
+export const reportUpdateSchema = z.object({
+  title: z.string().trim().max(220).optional().or(z.literal("")),
+  scope: reportScopeSchema.optional(),
+  manualInputs: reportManualInputsSchema.optional()
+});
+
+export const reportRevisionUpdateSchema = z.object({
+  title: z.string().trim().max(220).optional().or(z.literal("")),
+  contentMarkdown: z.string().max(60000).optional(),
+  contentJson: z.record(z.unknown()).optional()
+});
+
+export const reportGenerateSchema = z.object({
+  preserveExisting: z.boolean().default(true)
+});
+
+export const reportFinalizeSchema = z.object({
+  reviewerNote: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
 export type FederalClassification = (typeof federalClassifications)[number];
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ContractorCreateInput = z.infer<typeof contractorCreateSchema>;
@@ -482,6 +549,10 @@ export type IncidentRecommendationType = (typeof incidentRecommendationTypes)[nu
 export type ProjectDecisionStatus = (typeof projectDecisionStatuses)[number];
 export type IncidentFollowUpStatus = (typeof incidentFollowUpStatuses)[number];
 export type IncidentAiStatus = (typeof incidentAiStatuses)[number];
+export type ReportType = (typeof reportTypes)[number];
+export type ReportFormat = (typeof reportFormats)[number];
+export type ReportStatus = (typeof reportStatuses)[number];
+export type ReportGenerationStatus = (typeof reportGenerationStatuses)[number];
 export type ReadinessRequirementCreateInput = z.infer<typeof readinessRequirementCreateSchema>;
 export type ReadinessRequirementUpdateInput = z.infer<typeof readinessRequirementUpdateSchema>;
 export type ContractorRequirementApplyInput = z.infer<typeof contractorRequirementApplySchema>;
@@ -520,6 +591,14 @@ export type IncidentFollowUpInput = z.infer<typeof incidentFollowUpSchema>;
 export type IncidentLinkInput = z.infer<typeof incidentLinkSchema>;
 export type IncidentCloseInput = z.infer<typeof incidentCloseSchema>;
 export type IncidentReopenInput = z.infer<typeof incidentReopenSchema>;
+export type ReportScopeInput = z.infer<typeof reportScopeSchema>;
+export type ReportManualInputs = z.infer<typeof reportManualInputsSchema>;
+export type ReportCreateInput = z.infer<typeof reportCreateSchema>;
+export type ReportSearchInput = z.infer<typeof reportSearchSchema>;
+export type ReportUpdateInput = z.infer<typeof reportUpdateSchema>;
+export type ReportRevisionUpdateInput = z.infer<typeof reportRevisionUpdateSchema>;
+export type ReportGenerateInput = z.infer<typeof reportGenerateSchema>;
+export type ReportFinalizeInput = z.infer<typeof reportFinalizeSchema>;
 
 export interface UserSummary {
   id: string;
@@ -1063,6 +1142,87 @@ export interface IncidentDetail extends IncidentRecord {
   followUps: IncidentFollowUp[];
   links: IncidentLink[];
   auditEvents: IncidentAuditEvent[];
+}
+
+export interface ReportEvidenceManifest {
+  generatedAt: string;
+  periodStart: string;
+  periodEnd: string;
+  newDuringPeriod: {
+    observationIds: string[];
+    incidentIds: string[];
+    planReviewIds: string[];
+    readinessStatusIds: string[];
+    projectDecisionIds: string[];
+  };
+  carriedOpen: {
+    observationIds: string[];
+    incidentIds: string[];
+    planReviewIds: string[];
+    readinessStatusIds: string[];
+    projectDecisionIds: string[];
+  };
+  sourceIds: string[];
+}
+
+export interface SafetyReport {
+  id: string;
+  projectId: string;
+  reportType: ReportType;
+  format: ReportFormat;
+  periodStart: string;
+  periodEnd: string;
+  title: string;
+  status: ReportStatus;
+  generationStatus: ReportGenerationStatus;
+  generationProvider: string | null;
+  generationModel: string | null;
+  errorState: string | null;
+  scope: ReportScopeInput;
+  manualInputs: ReportManualInputs;
+  currentRevisionId: string | null;
+  createdByUserId: string;
+  finalizedAt: string | null;
+  finalizedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SafetyReportRevision {
+  id: string;
+  reportId: string;
+  revisionNumber: number;
+  status: ReportStatus;
+  title: string;
+  contentMarkdown: string;
+  contentJson: Record<string, unknown>;
+  evidenceManifest: ReportEvidenceManifest;
+  createdByUserId: string;
+  createdAt: string;
+  finalizedAt: string | null;
+  finalizedByUserId: string | null;
+}
+
+export interface SafetyReportAuditEvent {
+  id: string;
+  reportId: string;
+  revisionId: string | null;
+  eventType: string;
+  message: string;
+  actorUserId: string;
+  createdAt: string;
+}
+
+export interface SafetyReportDetail extends SafetyReport {
+  currentRevision: SafetyReportRevision | null;
+  revisions: SafetyReportRevision[];
+  auditEvents: SafetyReportAuditEvent[];
+}
+
+export interface ReportExport {
+  filename: string;
+  contentType: string;
+  content: string;
 }
 
 export interface ApiErrorBody {

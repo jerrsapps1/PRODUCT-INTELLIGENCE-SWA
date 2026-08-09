@@ -19,8 +19,12 @@ import type {
   Project,
   ProjectContractorEngagement,
   ProjectSourceLink,
+  ReportFormat,
+  ReportType,
   ReadinessRequirement,
   ReadinessStatus,
+  SafetyReport,
+  SafetyReportDetail,
   SafetyPlan,
   SafetyPlanDetail,
   PlanFinding,
@@ -247,6 +251,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
   const [activeIncidentId, setActiveIncidentId] = useState<string | null>(null);
   const [activeIncident, setActiveIncident] = useState<IncidentDetail | null>(null);
+  const [reports, setReports] = useState<SafetyReport[]>([]);
+  const [activeReportId, setActiveReportId] = useState<string | null>(null);
+  const [activeReport, setActiveReport] = useState<SafetyReportDetail | null>(null);
   const [activeView, setActiveView] = useState<View>("workspace");
   const [status, setStatus] = useState("Loading records...");
   const [error, setError] = useState("");
@@ -353,6 +360,27 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     setActiveIncident(body.incident);
   }
 
+  async function reloadReports(projectId = selectedProjectId) {
+    if (!projectId) {
+      setReports([]);
+      setActiveReportId(null);
+      setActiveReport(null);
+      return;
+    }
+    const body = await api<{ reports: SafetyReport[] }>(`/api/reports?projectId=${projectId}`);
+    setReports(body.reports);
+    setActiveReportId((current) => current ?? body.reports[0]?.id ?? null);
+  }
+
+  async function reloadActiveReport(reportId = activeReportId) {
+    if (!reportId) {
+      setActiveReport(null);
+      return;
+    }
+    const body = await api<{ report: SafetyReportDetail }>(`/api/reports/${reportId}`);
+    setActiveReport(body.report);
+  }
+
   async function reloadActivePlan(planId = activePlanId) {
     if (!planId) {
       setActivePlan(null);
@@ -407,6 +435,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setIncidents([]);
       setActiveIncidentId(null);
       setActiveIncident(null);
+      setReports([]);
+      setActiveReportId(null);
+      setActiveReport(null);
       return;
     }
     api<{ engagements: ProjectContractorEngagement[] }>(`/api/projects/${selectedProjectId}/contractors`)
@@ -426,6 +457,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     );
     reloadIncidents(selectedProjectId).catch((loadError) =>
       setError(loadError instanceof Error ? loadError.message : "Unable to load incidents")
+    );
+    reloadReports(selectedProjectId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load reports")
     );
   }, [selectedProjectId]);
 
@@ -465,6 +499,12 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setError(loadError instanceof Error ? loadError.message : "Unable to load incident")
     );
   }, [activeIncidentId]);
+
+  useEffect(() => {
+    reloadActiveReport(activeReportId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load report")
+    );
+  }, [activeReportId]);
 
   async function logout() {
     await api<void>("/api/auth/logout", { method: "POST" });
@@ -530,6 +570,7 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             activePlan={activePlan}
             activeObservation={activeObservation}
             activeIncident={activeIncident}
+            activeReport={activeReport}
           />
         </section>
 
@@ -622,6 +663,27 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
               if (incidentId) {
                 setActiveIncidentId(incidentId);
                 await reloadActiveIncident(incidentId);
+              }
+            }}
+          />
+          <ReportingWorkbench
+            project={selectedProject}
+            reports={reports}
+            activeReport={activeReport}
+            activeReportId={activeReportId}
+            onOpenReport={(id) => {
+              setActiveReportId(id);
+              setActiveIncidentId(null);
+              setActiveObservationId(null);
+              setActivePlanId(null);
+              setActiveSourceId(null);
+              setActiveView("workspace");
+            }}
+            onChanged={async (reportId) => {
+              await reloadReports(selectedProjectId);
+              if (reportId) {
+                setActiveReportId(reportId);
+                await reloadActiveReport(reportId);
               }
             }}
           />
@@ -742,7 +804,8 @@ function WorkspacePanel({
   summaries,
   activePlan,
   activeObservation,
-  activeIncident
+  activeIncident,
+  activeReport
 }: {
   project: Project | null;
   engagements: ProjectContractorEngagement[];
@@ -753,6 +816,7 @@ function WorkspacePanel({
   activePlan: SafetyPlanDetail | null;
   activeObservation: ObservationDetail | null;
   activeIncident: IncidentDetail | null;
+  activeReport: SafetyReportDetail | null;
 }) {
   if (!project) {
     return <div className="empty-state"><h2>No project open</h2><p>Create or select a blank project from the left panel.</p></div>;
@@ -769,7 +833,9 @@ function WorkspacePanel({
       </div>
       <section className="foundation-grid">
         <div>
-          {activeIncident ? (
+          {activeReport ? (
+            <SafetyReportView detail={activeReport} />
+          ) : activeIncident ? (
             <IncidentOversightView detail={activeIncident} />
           ) : activeObservation ? (
             <FieldObservationView detail={activeObservation} />
@@ -799,6 +865,51 @@ function WorkspacePanel({
         </div>
       </section>
     </>
+  );
+}
+
+function SafetyReportView({ detail }: { detail: SafetyReportDetail }) {
+  const manifest = detail.currentRevision?.evidenceManifest;
+  return (
+    <section className="plan-review" aria-labelledby="report-title">
+      <div className="project-heading compact-heading">
+        <div>
+          <p className="eyebrow">Safety reporting</p>
+          <h3 id="report-title">{detail.title}</h3>
+        </div>
+        <span>{detail.status}</span>
+      </div>
+      <div className="review-columns">
+        <article className="review-pane">
+          <p className="eyebrow">Report record</p>
+          <h4>{reportTypeLabel(detail.reportType)} - {reportFormatLabel(detail.format)}</h4>
+          <p>{detail.periodStart} to {detail.periodEnd}</p>
+          <p><strong>Generation:</strong> {detail.generationStatus}{detail.errorState ? ` - fallback: ${detail.errorState}` : ""}</p>
+          <p><strong>Author:</strong> {detail.createdByUserId}</p>
+          <p><strong>Reviewer:</strong> {detail.finalizedByUserId ?? "Not finalized"}</p>
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">Evidence manifest</p>
+          <h4>{manifest?.generatedAt ? new Date(manifest.generatedAt).toLocaleString() : "No draft generated"}</h4>
+          {manifest ? (
+            <>
+              <p>{manifest.newDuringPeriod.observationIds.length} observations, {manifest.newDuringPeriod.incidentIds.length} incidents, {manifest.newDuringPeriod.readinessStatusIds.length} readiness updates in period.</p>
+              <p>{manifest.carriedOpen.observationIds.length} open observations and {manifest.carriedOpen.incidentIds.length} open incidents carried forward.</p>
+              <p>{manifest.sourceIds.length} preserved source reference{manifest.sourceIds.length === 1 ? "" : "s"}.</p>
+            </>
+          ) : <p className="empty">Generate a draft to capture evidence IDs.</p>}
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">Revision history</p>
+          <h4>{detail.revisions.length} revision{detail.revisions.length === 1 ? "" : "s"}</h4>
+          {detail.revisions.slice(0, 5).map((revision) => (
+            <p key={revision.id}>v{revision.revisionNumber} - {revision.status} - {new Date(revision.createdAt).toLocaleString()}</p>
+          ))}
+          <p>{detail.auditEvents.length} audit event{detail.auditEvents.length === 1 ? "" : "s"}</p>
+        </article>
+      </div>
+      <pre className="recommendation-preview report-preview">{detail.currentRevision?.contentMarkdown ?? "No generated content yet."}</pre>
+    </section>
   );
 }
 
@@ -2091,6 +2202,194 @@ function IncidentOversightWorkbench({
   );
 }
 
+function ReportingWorkbench({
+  project,
+  reports,
+  activeReport,
+  activeReportId,
+  onOpenReport,
+  onChanged
+}: {
+  project: Project | null;
+  reports: SafetyReport[];
+  activeReport: SafetyReportDetail | null;
+  activeReportId: string | null;
+  onOpenReport: (id: string) => void;
+  onChanged: (reportId?: string) => Promise<void>;
+}) {
+  const [reportType, setReportType] = useState<ReportType>("daily");
+  const [format, setFormat] = useState<ReportFormat>("narrative");
+  const [periodStart, setPeriodStart] = useState(new Date().toISOString().slice(0, 10));
+  const [periodEnd, setPeriodEnd] = useState(new Date().toISOString().slice(0, 10));
+  const [title, setTitle] = useState("");
+  const [projectActivity, setProjectActivity] = useState("");
+  const [plannedWork, setPlannedWork] = useState("");
+  const [safetyEmphasis, setSafetyEmphasis] = useState("");
+  const [meetingNote, setMeetingNote] = useState("");
+  const [includeReadiness, setIncludeReadiness] = useState(true);
+  const [includePlanReview, setIncludePlanReview] = useState(true);
+  const [includeObservations, setIncludeObservations] = useState(true);
+  const [includeIncidents, setIncludeIncidents] = useState(true);
+  const [content, setContent] = useState("");
+  const [archiveType, setArchiveType] = useState<"" | ReportType>("");
+  const [archiveStatus, setArchiveStatus] = useState<"" | "draft" | "finalized">("");
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setContent(activeReport?.currentRevision?.contentMarkdown ?? "");
+  }, [activeReport?.currentRevision?.id]);
+
+  const filteredReports = reports
+    .filter((report) => !archiveType || report.reportType === archiveType)
+    .filter((report) => !archiveStatus || report.status === archiveStatus);
+
+  async function run(action: () => Promise<void>, message: string) {
+    setError("");
+    setStatus(message);
+    try {
+      await action();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Report operation failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  async function createReport(event: FormEvent) {
+    event.preventDefault();
+    if (!project) return;
+    await run(async () => {
+      const created = await api<{ report: SafetyReportDetail }>("/api/reports", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: project.id,
+          reportType,
+          format,
+          periodStart,
+          periodEnd,
+          title,
+          scope: {
+            includeContractors: true,
+            includeReadiness,
+            includePlanReview,
+            includeObservations,
+            includeIncidents,
+            includeOpenFollowUp: true,
+            includeProjectDecisions: true,
+            includeUpcomingFocus: true
+          },
+          manualInputs: { projectActivity, plannedWork, safetyEmphasis, meetingNote }
+        })
+      });
+      setTitle("");
+      await onChanged(created.report.id);
+    }, "Creating report...");
+  }
+
+  async function generateReport(preserveExisting = true) {
+    if (!activeReportId) return;
+    await run(async () => {
+      const generated = await api<{ report: SafetyReportDetail }>(`/api/reports/${activeReportId}/generate`, {
+        method: "POST",
+        body: JSON.stringify({ preserveExisting })
+      });
+      setContent(generated.report.currentRevision?.contentMarkdown ?? "");
+      await onChanged(activeReportId);
+    }, "Generating report draft...");
+  }
+
+  async function saveContent() {
+    if (!activeReport?.currentRevision) return;
+    await run(async () => {
+      await api<{ revision: unknown }>(`/api/report-revisions/${activeReport.currentRevision!.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ contentMarkdown: content })
+      });
+      await onChanged(activeReport.id);
+    }, "Saving report revision...");
+  }
+
+  async function finalizeReport() {
+    if (!activeReportId) return;
+    await run(async () => {
+      await api<{ report: SafetyReportDetail }>(`/api/reports/${activeReportId}/finalize`, {
+        method: "POST",
+        body: JSON.stringify({ reviewerNote: "Finalized by project user." })
+      });
+      await onChanged(activeReportId);
+    }, "Finalizing report...");
+  }
+
+  async function createRevision() {
+    if (!activeReportId) return;
+    await run(async () => {
+      await api<{ report: SafetyReportDetail }>(`/api/reports/${activeReportId}/revisions`, { method: "POST" });
+      await onChanged(activeReportId);
+    }, "Creating revision...");
+  }
+
+  return (
+    <section className="workbench-section">
+      <h2>Safety reports</h2>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {status ? <p className="banner muted">{status}</p> : null}
+      <form onSubmit={createReport} className="stack compact">
+        <label htmlFor="report-type">Type
+          <select id="report-type" value={reportType} onChange={(event) => setReportType(event.target.value as ReportType)} disabled={!project}>
+            {(["daily", "weekly", "monthly", "custom"] as ReportType[]).map((value) => <option key={value} value={value}>{reportTypeLabel(value)}</option>)}
+          </select>
+        </label>
+        <label htmlFor="report-format">Format
+          <select id="report-format" value={format} onChange={(event) => setFormat(event.target.value as ReportFormat)}>
+            <option value="narrative">Narrative</option>
+            <option value="structured">Structured</option>
+          </select>
+        </label>
+        <div className="two-col">
+          <label htmlFor="report-start">Start<input id="report-start" type="date" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} /></label>
+          <label htmlFor="report-end">End<input id="report-end" type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} /></label>
+        </div>
+        <label htmlFor="report-title-input">Title<input id="report-title-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+        <label htmlFor="report-activity">Project activity<textarea id="report-activity" value={projectActivity} onChange={(event) => setProjectActivity(event.target.value)} /></label>
+        <label htmlFor="report-meeting">Meeting note<textarea id="report-meeting" value={meetingNote} onChange={(event) => setMeetingNote(event.target.value)} /></label>
+        <label htmlFor="report-planned">Planned work<textarea id="report-planned" value={plannedWork} onChange={(event) => setPlannedWork(event.target.value)} /></label>
+        <label htmlFor="report-emphasis">Safety emphasis<textarea id="report-emphasis" value={safetyEmphasis} onChange={(event) => setSafetyEmphasis(event.target.value)} /></label>
+        <div className="scope-grid">
+          <label><input type="checkbox" checked={includeReadiness} onChange={(event) => setIncludeReadiness(event.target.checked)} /> Readiness</label>
+          <label><input type="checkbox" checked={includePlanReview} onChange={(event) => setIncludePlanReview(event.target.checked)} /> Plans</label>
+          <label><input type="checkbox" checked={includeObservations} onChange={(event) => setIncludeObservations(event.target.checked)} /> Observations</label>
+          <label><input type="checkbox" checked={includeIncidents} onChange={(event) => setIncludeIncidents(event.target.checked)} /> Incidents</label>
+        </div>
+        <button className="primary" disabled={!project}>Create report</button>
+      </form>
+      <div className="stack compact">
+        <h3>Archive</h3>
+        <div className="two-col">
+          <label htmlFor="archive-type">Type<select id="archive-type" value={archiveType} onChange={(event) => setArchiveType(event.target.value as "" | ReportType)}><option value="">All</option>{(["daily", "weekly", "monthly", "custom"] as ReportType[]).map((value) => <option key={value} value={value}>{reportTypeLabel(value)}</option>)}</select></label>
+          <label htmlFor="archive-status">Status<select id="archive-status" value={archiveStatus} onChange={(event) => setArchiveStatus(event.target.value as "" | "draft" | "finalized")}><option value="">All</option><option value="draft">Draft</option><option value="finalized">Finalized</option></select></label>
+        </div>
+        {filteredReports.map((report) => (
+          <button key={report.id} className={report.id === activeReportId ? "row active" : "row"} type="button" onClick={() => onOpenReport(report.id)}>
+            <strong>{report.title}</strong>
+            <span>{reportTypeLabel(report.reportType)} - {report.periodStart} to {report.periodEnd} - {report.status}</span>
+          </button>
+        ))}
+      </div>
+      <div className="stack compact">
+        <h3>Active report</h3>
+        <button className="secondary" type="button" disabled={!activeReportId} onClick={() => generateReport(true)}>Generate draft</button>
+        <button className="ghost" type="button" disabled={!activeReportId} onClick={() => generateReport(false)}>Regenerate current draft</button>
+        <label htmlFor="report-content">Editable content<textarea id="report-content" className="tall-textarea" value={content} onChange={(event) => setContent(event.target.value)} disabled={!activeReport?.currentRevision} /></label>
+        <button className="secondary" type="button" disabled={!activeReport?.currentRevision} onClick={saveContent}>Save edit</button>
+        <button className="secondary" type="button" disabled={!activeReportId} onClick={createRevision}>New revision</button>
+        <button className="primary" type="button" disabled={!activeReport?.currentRevision || activeReport.status === "finalized"} onClick={finalizeReport}>Finalize</button>
+        <a className={`button-link ${activeReport?.currentRevision ? "" : "disabled"}`} href={activeReport?.currentRevision ? `/api/reports/${activeReport.id}/export` : undefined} target="_blank" rel="noreferrer">Export HTML</a>
+      </div>
+    </section>
+  );
+}
+
 function authorityLabel(value: AuthorityClassification): string {
   return authorityOptions.find((option) => option.value === value)?.label ?? value;
 }
@@ -2137,6 +2436,17 @@ function incidentStatusLabel(value: IncidentOversightStatus): string {
 
 function affectedWorkLabel(value: AffectedWorkDisposition): string {
   return affectedWorkOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function reportTypeLabel(value: ReportType): string {
+  if (value === "daily") return "Daily";
+  if (value === "weekly") return "Weekly";
+  if (value === "monthly") return "Monthly";
+  return "Custom";
+}
+
+function reportFormatLabel(value: ReportFormat): string {
+  return value === "structured" ? "Structured" : "Narrative";
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

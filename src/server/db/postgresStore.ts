@@ -80,6 +80,20 @@ import type {
   IncidentUpdateInput,
   ProjectSafetyDecision,
   ProjectSafetyDecisionInput,
+  ReportCreateInput,
+  ReportExport,
+  ReportEvidenceManifest,
+  ReportFinalizeInput,
+  ReportGenerateInput,
+  ReportManualInputs,
+  ReportRevisionUpdateInput,
+  ReportScopeInput,
+  ReportSearchInput,
+  ReportUpdateInput,
+  SafetyReport,
+  SafetyReportAuditEvent,
+  SafetyReportDetail,
+  SafetyReportRevision,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -103,6 +117,7 @@ import {
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
 import { runIncidentAssistant } from "../incidentAssistant";
+import { draftFallbackSafetyReport, draftSafetyReport, type ReportEvidenceContext } from "../reportAssistant";
 
 const { Pool } = pg;
 
@@ -630,6 +645,56 @@ CREATE TABLE IF NOT EXISTS incident_audit_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS safety_reports (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  report_type text NOT NULL CHECK (report_type IN ('daily','weekly','monthly','custom')),
+  format text NOT NULL CHECK (format IN ('narrative','structured')),
+  period_start date NOT NULL,
+  period_end date NOT NULL,
+  title text NOT NULL,
+  status text NOT NULL CHECK (status IN ('draft','finalized')) DEFAULT 'draft',
+  generation_status text NOT NULL CHECK (generation_status IN ('not_generated','generating','ready','failed')) DEFAULT 'not_generated',
+  generation_provider text,
+  generation_model text,
+  error_state text,
+  scope jsonb NOT NULL DEFAULT '{}'::jsonb,
+  manual_inputs jsonb NOT NULL DEFAULT '{}'::jsonb,
+  current_revision_id uuid,
+  created_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  finalized_at timestamptz,
+  finalized_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (period_start <= period_end)
+);
+
+CREATE TABLE IF NOT EXISTS safety_report_revisions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id uuid NOT NULL REFERENCES safety_reports(id) ON DELETE CASCADE,
+  revision_number integer NOT NULL,
+  status text NOT NULL CHECK (status IN ('draft','finalized')) DEFAULT 'draft',
+  title text NOT NULL,
+  content_markdown text NOT NULL DEFAULT '',
+  content_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  evidence_manifest jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  finalized_at timestamptz,
+  finalized_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  UNIQUE (report_id, revision_number)
+);
+
+CREATE TABLE IF NOT EXISTS safety_report_audit_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id uuid NOT NULL REFERENCES safety_reports(id) ON DELETE CASCADE,
+  revision_id uuid REFERENCES safety_report_revisions(id) ON DELETE SET NULL,
+  event_type text NOT NULL,
+  message text NOT NULL,
+  actor_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_safety_plans_engagement_id ON safety_plans(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_safety_plan_revisions_plan_id ON safety_plan_revisions(plan_id);
 CREATE INDEX IF NOT EXISTS idx_plan_reviews_plan_id ON plan_reviews(plan_id);
@@ -651,10 +716,68 @@ CREATE INDEX IF NOT EXISTS idx_project_safety_decisions_incident_id ON project_s
 CREATE INDEX IF NOT EXISTS idx_incident_followups_incident_id ON incident_followups(incident_id);
 CREATE INDEX IF NOT EXISTS idx_incident_links_incident_id ON incident_links(incident_id);
 CREATE INDEX IF NOT EXISTS idx_incident_audit_events_incident_id ON incident_audit_events(incident_id);
+CREATE INDEX IF NOT EXISTS idx_safety_reports_project_id ON safety_reports(project_id);
+CREATE INDEX IF NOT EXISTS idx_safety_reports_period ON safety_reports(period_start, period_end);
+CREATE INDEX IF NOT EXISTS idx_safety_report_revisions_report_id ON safety_report_revisions(report_id);
+CREATE INDEX IF NOT EXISTS idx_safety_report_audit_report_id ON safety_report_audit_events(report_id);
 `;
 
 function clean(value: string | undefined): string | null {
   return value && value.trim() ? value.trim() : null;
+}
+
+function titleCase(value: string): string {
+  return value.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join(" ");
+}
+
+function normalizeReportScope(scope: Partial<ReportScopeInput> | undefined): ReportScopeInput {
+  return {
+    includeContractors: scope?.includeContractors ?? true,
+    includeReadiness: scope?.includeReadiness ?? true,
+    includePlanReview: scope?.includePlanReview ?? true,
+    includeObservations: scope?.includeObservations ?? true,
+    includeIncidents: scope?.includeIncidents ?? true,
+    includeOpenFollowUp: scope?.includeOpenFollowUp ?? true,
+    includeProjectDecisions: scope?.includeProjectDecisions ?? true,
+    includeUpcomingFocus: scope?.includeUpcomingFocus ?? true
+  };
+}
+
+function normalizeManualInputs(inputs: Partial<ReportManualInputs> | undefined): ReportManualInputs {
+  return {
+    projectActivity: inputs?.projectActivity ?? "",
+    meetingNote: inputs?.meetingNote ?? "",
+    plannedWork: inputs?.plannedWork ?? "",
+    weather: inputs?.weather ?? "",
+    visitorAuditNote: inputs?.visitorAuditNote ?? "",
+    milestone: inputs?.milestone ?? "",
+    safetyEmphasis: inputs?.safetyEmphasis ?? "",
+    otherContext: inputs?.otherContext ?? ""
+  };
+}
+
+function emptyReportManifest(periodStart: string, periodEnd: string): ReportEvidenceManifest {
+  return {
+    generatedAt: new Date().toISOString(),
+    periodStart,
+    periodEnd,
+    newDuringPeriod: { observationIds: [], incidentIds: [], planReviewIds: [], readinessStatusIds: [], projectDecisionIds: [] },
+    carriedOpen: { observationIds: [], incidentIds: [], planReviewIds: [], readinessStatusIds: [], projectDecisionIds: [] },
+    sourceIds: []
+  };
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] as string);
+}
+
+function reportHtml(detail: SafetyReportDetail): string {
+  const body = escapeHtml(detail.currentRevision?.contentMarkdown ?? "").split("\n").map((line) => line ? `<p>${line}</p>` : "").join("\n");
+  return `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>${escapeHtml(detail.title)}</title><style>body{font-family:Arial,sans-serif;max-width:900px;margin:32px auto;line-height:1.5;color:#17202a}p{white-space:pre-wrap}header{border-bottom:1px solid #d0d7de;margin-bottom:24px}</style></head>
+<body><header><h1>${escapeHtml(detail.title)}</h1><p>${escapeHtml(detail.reportType)} | ${escapeHtml(detail.periodStart)} to ${escapeHtml(detail.periodEnd)} | ${escapeHtml(detail.status)}</p></header>${body}</body>
+</html>`;
 }
 
 function toIsoDate(value: Date | string | null): string | null {
@@ -1213,6 +1336,60 @@ function mapIncidentAudit(row: Record<string, unknown>): IncidentAuditEvent {
   return {
     id: String(row.id),
     incidentId: String(row.incident_id),
+    eventType: String(row.event_type),
+    message: String(row.message),
+    actorUserId: String(row.actor_user_id),
+    createdAt: new Date(row.created_at as string).toISOString()
+  };
+}
+
+function mapReport(row: Record<string, unknown>): SafetyReport {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    reportType: row.report_type as SafetyReport["reportType"],
+    format: row.format as SafetyReport["format"],
+    periodStart: toIsoDate(row.period_start as Date | string) as string,
+    periodEnd: toIsoDate(row.period_end as Date | string) as string,
+    title: String(row.title),
+    status: row.status as SafetyReport["status"],
+    generationStatus: row.generation_status as SafetyReport["generationStatus"],
+    generationProvider: row.generation_provider ? String(row.generation_provider) : null,
+    generationModel: row.generation_model ? String(row.generation_model) : null,
+    errorState: row.error_state ? String(row.error_state) : null,
+    scope: normalizeReportScope(row.scope as Partial<ReportScopeInput> | undefined),
+    manualInputs: normalizeManualInputs(row.manual_inputs as Partial<ReportManualInputs> | undefined),
+    currentRevisionId: row.current_revision_id ? String(row.current_revision_id) : null,
+    createdByUserId: String(row.created_by_user_id),
+    finalizedAt: row.finalized_at ? new Date(row.finalized_at as string).toISOString() : null,
+    finalizedByUserId: row.finalized_by_user_id ? String(row.finalized_by_user_id) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapReportRevision(row: Record<string, unknown>): SafetyReportRevision {
+  return {
+    id: String(row.id),
+    reportId: String(row.report_id),
+    revisionNumber: Number(row.revision_number),
+    status: row.status as SafetyReportRevision["status"],
+    title: String(row.title),
+    contentMarkdown: String(row.content_markdown ?? ""),
+    contentJson: (row.content_json ?? {}) as Record<string, unknown>,
+    evidenceManifest: (row.evidence_manifest ?? emptyReportManifest("", "")) as ReportEvidenceManifest,
+    createdByUserId: String(row.created_by_user_id),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    finalizedAt: row.finalized_at ? new Date(row.finalized_at as string).toISOString() : null,
+    finalizedByUserId: row.finalized_by_user_id ? String(row.finalized_by_user_id) : null
+  };
+}
+
+function mapReportAudit(row: Record<string, unknown>): SafetyReportAuditEvent {
+  return {
+    id: String(row.id),
+    reportId: String(row.report_id),
+    revisionId: row.revision_id ? String(row.revision_id) : null,
     eventType: String(row.event_type),
     message: String(row.message),
     actorUserId: String(row.actor_user_id),
@@ -2586,6 +2763,232 @@ export class PostgresStore implements AppStore {
     const result = await this.pool.query("UPDATE incidents SET oversight_status = 'under_project_review', reopened_at = now(), reopened_by_user_id = $2, reopen_reason = $3, updated_at = now() WHERE id = $1 RETURNING *", [incidentId, userId, input.reason.trim()]);
     await this.addIncidentAudit(userId, incidentId, "incident_reopened", input.reason.trim());
     return this.buildIncidentDetail(userId, result.rows[0]);
+  }
+
+  async listReports(userId: string, filters: ReportSearchInput): Promise<SafetyReport[]> {
+    if (!(await this.getProject(userId, filters.projectId))) return [];
+    const clauses = ["project_id = $1"];
+    const values: unknown[] = [filters.projectId];
+    if (filters.reportType) { values.push(filters.reportType); clauses.push(`report_type = $${values.length}`); }
+    if (filters.status) { values.push(filters.status); clauses.push(`status = $${values.length}`); }
+    if (filters.dateFrom) { values.push(filters.dateFrom); clauses.push(`period_end >= $${values.length}`); }
+    if (filters.dateTo) { values.push(filters.dateTo); clauses.push(`period_start <= $${values.length}`); }
+    const result = await this.pool.query(`SELECT * FROM safety_reports WHERE ${clauses.join(" AND ")} ORDER BY period_end DESC, created_at DESC`, values);
+    return result.rows.map(mapReport);
+  }
+
+  async createReport(userId: string, input: ReportCreateInput): Promise<SafetyReportDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    const result = await this.pool.query(
+      `INSERT INTO safety_reports (project_id, report_type, format, period_start, period_end, title, scope, manual_inputs, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [input.projectId, input.reportType, input.format, input.periodStart, input.periodEnd, clean(input.title) ?? `${titleCase(input.reportType)} Safety Report`, normalizeReportScope(input.scope), normalizeManualInputs(input.manualInputs), userId]
+    );
+    await this.addReportAudit(userId, result.rows[0].id, null, "report_created", "Created safety report shell");
+    return (await this.getReport(userId, result.rows[0].id)) as SafetyReportDetail;
+  }
+
+  async getReport(userId: string, reportId: string): Promise<SafetyReportDetail | null> {
+    const result = await this.pool.query(
+      `SELECT r.* FROM safety_reports r JOIN projects p ON p.id = r.project_id WHERE p.owner_user_id = $1 AND r.id = $2`,
+      [userId, reportId]
+    );
+    if (!result.rows[0]) return null;
+    return this.buildReportDetail(mapReport(result.rows[0]));
+  }
+
+  async updateReport(userId: string, reportId: string, input: ReportUpdateInput): Promise<SafetyReportDetail | null> {
+    const current = await this.getReport(userId, reportId);
+    if (!current) return null;
+    const result = await this.pool.query(
+      `UPDATE safety_reports SET title = $2, scope = $3, manual_inputs = $4, updated_at = now() WHERE id = $1 RETURNING *`,
+      [reportId, input.title === undefined ? current.title : clean(input.title) ?? current.title, input.scope ? normalizeReportScope(input.scope) : current.scope, input.manualInputs ? normalizeManualInputs(input.manualInputs) : current.manualInputs]
+    );
+    await this.addReportAudit(userId, reportId, null, "report_updated", "Updated report metadata, scope, or manual inputs");
+    return this.buildReportDetail(mapReport(result.rows[0]));
+  }
+
+  async generateReportDraft(userId: string, reportId: string, input: ReportGenerateInput): Promise<SafetyReportDetail | null> {
+    const detail = await this.getReport(userId, reportId);
+    if (!detail) return null;
+    await this.pool.query("UPDATE safety_reports SET generation_status = 'generating', error_state = NULL, updated_at = now() WHERE id = $1", [reportId]);
+    const context = await this.buildReportEvidenceContext(userId, { ...detail, generationStatus: "generating", errorState: null });
+    let draft;
+    try {
+      draft = await draftSafetyReport(context);
+    } catch (error) {
+      draft = draftFallbackSafetyReport(context, error);
+    }
+    const existing = detail.currentRevision;
+    const replaceExisting = existing && !input.preserveExisting && existing.status === "draft";
+    const revisionNumber = replaceExisting ? existing.revisionNumber : await this.nextReportRevisionNumber(reportId);
+    const revisionId = replaceExisting ? existing.id : randomUUID();
+    const revisionResult = await this.pool.query(
+      `INSERT INTO safety_report_revisions
+       (id, report_id, revision_number, status, title, content_markdown, content_json, evidence_manifest, created_by_user_id)
+       VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8)
+       ON CONFLICT (report_id, revision_number) DO UPDATE SET title = EXCLUDED.title, content_markdown = EXCLUDED.content_markdown,
+         content_json = EXCLUDED.content_json, evidence_manifest = EXCLUDED.evidence_manifest, status = 'draft', finalized_at = NULL, finalized_by_user_id = NULL
+       RETURNING *`,
+      [revisionId, reportId, revisionNumber, detail.title, draft.contentMarkdown, draft.contentJson, context.manifest, userId]
+    );
+    await this.pool.query(
+      `UPDATE safety_reports SET status = 'draft', generation_status = 'ready', generation_provider = $2, generation_model = $3,
+       error_state = $4, current_revision_id = $5, finalized_at = NULL, finalized_by_user_id = NULL, updated_at = now() WHERE id = $1`,
+      [reportId, draft.provider, draft.model, draft.errorState, revisionResult.rows[0].id]
+    );
+    await this.addReportAudit(userId, reportId, revisionResult.rows[0].id, draft.errorState ? "report_generated_with_fallback" : "report_generated", "Generated editable report draft from evidence manifest");
+    return this.getReport(userId, reportId);
+  }
+
+  async updateReportRevision(userId: string, revisionId: string, input: ReportRevisionUpdateInput): Promise<SafetyReportRevision | null> {
+    const currentResult = await this.pool.query(
+      `SELECT rv.* FROM safety_report_revisions rv
+       JOIN safety_reports r ON r.id = rv.report_id
+       JOIN projects p ON p.id = r.project_id
+       WHERE p.owner_user_id = $1 AND rv.id = $2`,
+      [userId, revisionId]
+    );
+    if (!currentResult.rows[0]) return null;
+    const current = mapReportRevision(currentResult.rows[0]);
+    const targetId = current.status === "finalized" ? randomUUID() : current.id;
+    const targetNumber = current.status === "finalized" ? await this.nextReportRevisionNumber(current.reportId) : current.revisionNumber;
+    const result = await this.pool.query(
+      `INSERT INTO safety_report_revisions
+       (id, report_id, revision_number, status, title, content_markdown, content_json, evidence_manifest, created_by_user_id)
+       VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8)
+       ON CONFLICT (report_id, revision_number) DO UPDATE SET title = EXCLUDED.title, content_markdown = EXCLUDED.content_markdown, content_json = EXCLUDED.content_json
+       RETURNING *`,
+      [targetId, current.reportId, targetNumber, input.title === undefined ? current.title : clean(input.title) ?? current.title, input.contentMarkdown ?? current.contentMarkdown, input.contentJson ?? current.contentJson, current.evidenceManifest, userId]
+    );
+    await this.pool.query("UPDATE safety_reports SET status = 'draft', current_revision_id = $2, finalized_at = NULL, finalized_by_user_id = NULL, updated_at = now() WHERE id = $1", [current.reportId, result.rows[0].id]);
+    await this.addReportAudit(userId, current.reportId, result.rows[0].id, "revision_edited", current.status === "finalized" ? "Created draft revision from finalized report edits" : "Edited report draft revision");
+    return mapReportRevision(result.rows[0]);
+  }
+
+  async finalizeReport(userId: string, reportId: string, input: ReportFinalizeInput): Promise<SafetyReportDetail | null> {
+    const detail = await this.getReport(userId, reportId);
+    if (!detail?.currentRevision) return null;
+    await this.pool.query("UPDATE safety_report_revisions SET status = 'finalized', finalized_at = now(), finalized_by_user_id = $2 WHERE id = $1", [detail.currentRevision.id, userId]);
+    await this.pool.query("UPDATE safety_reports SET status = 'finalized', finalized_at = now(), finalized_by_user_id = $2, updated_at = now() WHERE id = $1", [reportId, userId]);
+    await this.addReportAudit(userId, reportId, detail.currentRevision.id, "report_finalized", clean(input.reviewerNote) ?? "Finalized safety report");
+    return this.getReport(userId, reportId);
+  }
+
+  async createReportRevision(userId: string, reportId: string): Promise<SafetyReportDetail | null> {
+    const detail = await this.getReport(userId, reportId);
+    if (!detail) return null;
+    const current = detail.currentRevision;
+    const result = await this.pool.query(
+      `INSERT INTO safety_report_revisions (report_id, revision_number, status, title, content_markdown, content_json, evidence_manifest, created_by_user_id)
+       VALUES ($1, $2, 'draft', $3, $4, $5, $6, $7) RETURNING *`,
+      [reportId, await this.nextReportRevisionNumber(reportId), current?.title ?? detail.title, current?.contentMarkdown ?? "", current?.contentJson ?? {}, current?.evidenceManifest ?? emptyReportManifest(detail.periodStart, detail.periodEnd), userId]
+    );
+    await this.pool.query("UPDATE safety_reports SET status = 'draft', current_revision_id = $2, finalized_at = NULL, finalized_by_user_id = NULL, updated_at = now() WHERE id = $1", [reportId, result.rows[0].id]);
+    await this.addReportAudit(userId, reportId, result.rows[0].id, "revision_created", "Created editable report revision");
+    return this.getReport(userId, reportId);
+  }
+
+  async exportReport(userId: string, reportId: string): Promise<ReportExport | null> {
+    const detail = await this.getReport(userId, reportId);
+    if (!detail?.currentRevision) return null;
+    return {
+      filename: `${detail.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "safety-report"}.html`,
+      contentType: "text/html; charset=utf-8",
+      content: reportHtml(detail)
+    };
+  }
+
+  private async buildReportDetail(report: SafetyReport): Promise<SafetyReportDetail> {
+    const revisions = await this.pool.query("SELECT * FROM safety_report_revisions WHERE report_id = $1 ORDER BY revision_number DESC", [report.id]);
+    const audit = await this.pool.query("SELECT * FROM safety_report_audit_events WHERE report_id = $1 ORDER BY created_at ASC", [report.id]);
+    const mappedRevisions = revisions.rows.map(mapReportRevision);
+    return {
+      ...report,
+      currentRevision: report.currentRevisionId ? mappedRevisions.find((revision) => revision.id === report.currentRevisionId) ?? null : null,
+      revisions: mappedRevisions,
+      auditEvents: audit.rows.map(mapReportAudit)
+    };
+  }
+
+  private async buildReportEvidenceContext(userId: string, report: SafetyReport): Promise<ReportEvidenceContext> {
+    const project = (await this.getProject(userId, report.projectId)) as Project;
+    const engagements = await this.listProjectEngagements(userId, report.projectId);
+    const observations = await this.listObservations(userId, { projectId: report.projectId });
+    const incidents = await this.listIncidents(userId, { projectId: report.projectId });
+    const inPeriodObservations = observations.filter((item) => item.observedAt.slice(0, 10) >= report.periodStart && item.observedAt.slice(0, 10) <= report.periodEnd);
+    const carriedObservations = observations.filter((item) => item.observedAt.slice(0, 10) < report.periodStart && item.followUpStatus === "needed");
+    const inPeriodIncidents = incidents.filter((item) => item.incidentDateTime.slice(0, 10) >= report.periodStart && item.incidentDateTime.slice(0, 10) <= report.periodEnd);
+    const carriedIncidents = incidents.filter((item) => item.incidentDateTime.slice(0, 10) < report.periodStart && item.oversightStatus !== "closed");
+    const plansResult = await this.pool.query("SELECT * FROM safety_plans WHERE project_id = $1 ORDER BY created_at DESC", [report.projectId]);
+    const safetyPlans = plansResult.rows.map(mapSafetyPlan);
+    const reviewsResult = await this.pool.query("SELECT pr.* FROM plan_reviews pr JOIN safety_plans sp ON sp.id = pr.plan_id WHERE sp.project_id = $1", [report.projectId]);
+    const readinessResult = await this.pool.query(
+      `SELECT crs.*, rr.id AS rr_id, rr.project_id, rr.title, rr.description, rr.category, rr.source_id, rr.source_chunk_id,
+              rr.citation_label, rr.required, rr.blocking, rr.due_date, rr.created_at AS rr_created_at, rr.updated_at AS rr_updated_at
+       FROM contractor_requirement_statuses crs
+       JOIN readiness_requirements rr ON rr.id = crs.requirement_id
+       JOIN project_contractor_engagements e ON e.id = crs.engagement_id
+       WHERE e.project_id = $1`,
+      [report.projectId]
+    );
+    const readinessStatuses = readinessResult.rows.map((row) => mapRequirementStatus(row, mapReadinessRequirement({
+      id: row.rr_id,
+      project_id: row.project_id,
+      title: row.title,
+      description: row.description,
+      category: row.category,
+      source_id: row.source_id,
+      source_chunk_id: row.source_chunk_id,
+      citation_label: row.citation_label,
+      required: row.required,
+      blocking: row.blocking,
+      due_date: row.due_date,
+      created_at: row.rr_created_at,
+      updated_at: row.rr_updated_at
+    })));
+    const decisionsResult = await this.pool.query("SELECT * FROM project_safety_decisions WHERE project_id = $1 AND status = 'active' ORDER BY created_at DESC", [report.projectId]);
+    const projectDecisions = decisionsResult.rows.map((row) => mapProjectSafetyDecision(row));
+    const inPeriodDecisions = projectDecisions.filter((decision) => decision.effectiveDate ? decision.effectiveDate >= report.periodStart && decision.effectiveDate <= report.periodEnd : decision.createdAt.slice(0, 10) >= report.periodStart && decision.createdAt.slice(0, 10) <= report.periodEnd);
+    const sourceResult = await this.pool.query(
+      `SELECT source_id FROM incident_attachments ia JOIN incidents i ON i.id = ia.incident_id WHERE i.project_id = $1
+       UNION SELECT source_id FROM safety_plan_revisions spr JOIN safety_plans sp ON sp.id = spr.plan_id WHERE sp.project_id = $1
+       UNION SELECT source_id FROM observation_reference_links orl JOIN field_observations fo ON fo.id = orl.observation_id WHERE fo.project_id = $1`,
+      [report.projectId]
+    );
+    const manifest: ReportEvidenceManifest = {
+      generatedAt: new Date().toISOString(),
+      periodStart: report.periodStart,
+      periodEnd: report.periodEnd,
+      newDuringPeriod: {
+        observationIds: inPeriodObservations.map((item) => item.id),
+        incidentIds: inPeriodIncidents.map((item) => item.id),
+        planReviewIds: reviewsResult.rows.filter((row) => new Date(row.created_at as string).toISOString().slice(0, 10) >= report.periodStart && new Date(row.created_at as string).toISOString().slice(0, 10) <= report.periodEnd).map((row) => String(row.id)),
+        readinessStatusIds: readinessStatuses.filter((status) => status.updatedAt.slice(0, 10) >= report.periodStart && status.updatedAt.slice(0, 10) <= report.periodEnd).map((status) => status.id),
+        projectDecisionIds: inPeriodDecisions.map((decision) => decision.id)
+      },
+      carriedOpen: {
+        observationIds: report.scope.includeOpenFollowUp ? carriedObservations.map((item) => item.id) : [],
+        incidentIds: report.scope.includeOpenFollowUp ? carriedIncidents.map((item) => item.id) : [],
+        planReviewIds: reviewsResult.rows.filter((row) => new Date(row.created_at as string).toISOString().slice(0, 10) < report.periodStart && row.status !== "approved").map((row) => String(row.id)),
+        readinessStatusIds: readinessStatuses.filter((status) => status.updatedAt.slice(0, 10) < report.periodStart && !["accepted", "not_applicable"].includes(status.status)).map((status) => status.id),
+        projectDecisionIds: projectDecisions.filter((decision) => !inPeriodDecisions.some((item) => item.id === decision.id)).map((decision) => decision.id)
+      },
+      sourceIds: sourceResult.rows.map((row) => String(row.source_id))
+    };
+    return { project, reportType: report.reportType, format: report.format, periodStart: report.periodStart, periodEnd: report.periodEnd, scope: report.scope, manualInputs: report.manualInputs, engagements, observations: inPeriodObservations, carriedObservations, incidents: inPeriodIncidents, carriedIncidents, safetyPlans, readinessStatuses, projectDecisions, manifest };
+  }
+
+  private async nextReportRevisionNumber(reportId: string): Promise<number> {
+    const result = await this.pool.query("SELECT COALESCE(MAX(revision_number), 0) + 1 AS next_revision FROM safety_report_revisions WHERE report_id = $1", [reportId]);
+    return Number(result.rows[0].next_revision);
+  }
+
+  private async addReportAudit(userId: string, reportId: string, revisionId: string | null, eventType: string, message: string): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO safety_report_audit_events (report_id, revision_id, event_type, message, actor_user_id) VALUES ($1, $2, $3, $4, $5)",
+      [reportId, revisionId, eventType, message, userId]
+    );
   }
 
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {

@@ -38,6 +38,12 @@ import {
   incidentSearchSchema,
   incidentUpdateSchema,
   projectSafetyDecisionSchema,
+  reportCreateSchema,
+  reportFinalizeSchema,
+  reportGenerateSchema,
+  reportRevisionUpdateSchema,
+  reportSearchSchema,
+  reportUpdateSchema,
   readinessEvidenceCreateSchema,
   readinessEvidenceReviewSchema,
   readinessRequirementCreateSchema,
@@ -658,6 +664,100 @@ export async function createApp(options: AppOptions) {
       if (parts[0] === "api" && parts[1] === "incident-links" && parts.length === 3 && method === "DELETE") {
         await store.unlinkIncidentRecord(userId, parts[2]);
         sendNoContent(res);
+        return;
+      }
+
+      if (method === "GET" && parts.join("/") === "api/reports") {
+        const filters = reportSearchSchema.parse(Object.fromEntries(url.searchParams.entries()));
+        sendJson(res, 200, { reports: await store.listReports(userId, filters) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/reports") {
+        const input = await readJson(req, reportCreateSchema);
+        const report = await store.createReport(userId, {
+          ...input,
+          scope: {
+            includeContractors: input.scope?.includeContractors ?? true,
+            includeReadiness: input.scope?.includeReadiness ?? true,
+            includePlanReview: input.scope?.includePlanReview ?? true,
+            includeObservations: input.scope?.includeObservations ?? true,
+            includeIncidents: input.scope?.includeIncidents ?? true,
+            includeOpenFollowUp: input.scope?.includeOpenFollowUp ?? true,
+            includeProjectDecisions: input.scope?.includeProjectDecisions ?? true,
+            includeUpcomingFocus: input.scope?.includeUpcomingFocus ?? true
+          },
+          manualInputs: input.manualInputs ?? {}
+        });
+        sendJson(res, 201, { report });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "reports" && parts.length >= 3) {
+        const reportId = parts[2];
+        if (method === "GET" && parts.length === 3) {
+          const report = await store.getReport(userId, reportId);
+          if (!report) sendJson(res, 404, { error: "Report not found" });
+          else sendJson(res, 200, { report });
+          return;
+        }
+        if (method === "PATCH" && parts.length === 3) {
+          const input = await readJson(req, reportUpdateSchema);
+          const report = await store.updateReport(userId, reportId, {
+            ...input,
+            scope: input.scope ? {
+              includeContractors: input.scope.includeContractors ?? true,
+              includeReadiness: input.scope.includeReadiness ?? true,
+              includePlanReview: input.scope.includePlanReview ?? true,
+              includeObservations: input.scope.includeObservations ?? true,
+              includeIncidents: input.scope.includeIncidents ?? true,
+              includeOpenFollowUp: input.scope.includeOpenFollowUp ?? true,
+              includeProjectDecisions: input.scope.includeProjectDecisions ?? true,
+              includeUpcomingFocus: input.scope.includeUpcomingFocus ?? true
+            } : undefined
+          });
+          if (!report) sendJson(res, 404, { error: "Report not found" });
+          else sendJson(res, 200, { report });
+          return;
+        }
+        if (method === "POST" && parts[3] === "generate" && parts.length === 4) {
+          const input = await readJson(req, reportGenerateSchema);
+          const report = await store.generateReportDraft(userId, reportId, { preserveExisting: input.preserveExisting ?? true });
+          if (!report) sendJson(res, 404, { error: "Report not found" });
+          else sendJson(res, 201, { report });
+          return;
+        }
+        if (method === "POST" && parts[3] === "revisions" && parts.length === 4) {
+          const report = await store.createReportRevision(userId, reportId);
+          if (!report) sendJson(res, 404, { error: "Report not found" });
+          else sendJson(res, 201, { report });
+          return;
+        }
+        if (method === "POST" && parts[3] === "finalize" && parts.length === 4) {
+          const report = await store.finalizeReport(userId, reportId, await readJson(req, reportFinalizeSchema));
+          if (!report) sendJson(res, 404, { error: "Report not found" });
+          else sendJson(res, 200, { report });
+          return;
+        }
+        if (method === "GET" && parts[3] === "export" && parts.length === 4) {
+          const exported = await store.exportReport(userId, reportId);
+          if (!exported) {
+            sendJson(res, 404, { error: "Report not found" });
+          } else {
+            res.writeHead(200, {
+              "content-type": exported.contentType,
+              "content-disposition": `attachment; filename="${exported.filename}"`
+            });
+            res.end(exported.content);
+          }
+          return;
+        }
+      }
+
+      if (parts[0] === "api" && parts[1] === "report-revisions" && parts.length === 3 && method === "PATCH") {
+        const revision = await store.updateReportRevision(userId, parts[2], await readJson(req, reportRevisionUpdateSchema));
+        if (!revision) sendJson(res, 404, { error: "Report revision not found" });
+        else sendJson(res, 200, { revision });
         return;
       }
 

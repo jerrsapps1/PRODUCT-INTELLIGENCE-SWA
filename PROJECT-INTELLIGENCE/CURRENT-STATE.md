@@ -19,6 +19,7 @@ Status date: 2026-08-09
 - The plan-review model preserves submitted plan sources, revisions, selected review sources, draft findings, reviewer edits, recommendations, approvals, and audit history separately.
 - The field-observation model preserves original field notes and photo source associations separately from editable AI suggestions, reviewer fields, follow-up state, and plan-finding links.
 - The incident-oversight model preserves contractor incident files separately from GC/project review, recommendations, project decisions, follow-up, and closure history.
+- The safety-reporting model preserves editable report records, evidence manifests, revisions, finalization status, and audit events separately from source records and underlying project evidence.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1
@@ -105,11 +106,24 @@ Status date: 2026-08-09
 - Project incident register with filters for contractor engagement, date, category, status, open/closed, and follow-up state.
 - Responsive incident oversight controls in the existing desktop/tablet workspace.
 
+## Implemented in Phase 7
+
+- Daily, weekly, monthly, and custom safety report records with explicit project, period start/end, report type, format, status, generation metadata, author, reviewer/finalization fields, manual inputs, and scope controls.
+- Shared report architecture across all report types rather than separate one-off flows.
+- Evidence manifests that distinguish new evidence during the report period from prior carried-open items and preserve source IDs without duplicating full source documents.
+- Report evidence coverage from contractor readiness, safety plan review, field observations, incident oversight, project safety decisions, contractor context, and manual report-specific inputs.
+- Narrative and structured deterministic draft generation with provider-agnostic assistant boundaries and deterministic fallback on provider failure.
+- Human-editable report revisions, safe regeneration with revision preservation, finalized report preservation, and draft creation after finalized edits.
+- Report archive filtering by project, type, status, and date window.
+- Printable/exportable HTML report output.
+- Report audit events for creation, generation, fallback, editing, revision creation, and finalization.
+- Responsive reporting controls in the existing desktop/tablet workspace.
+
 ## Not implemented by design
 
-- Embeddings, vector search, general crawling, OSHA recordkeeping, workers compensation claims, insurance claims, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
+- Embeddings, vector search, general crawling, OSHA recordkeeping, workers compensation claims, insurance claims, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
 - Production object-storage provider integration. The abstraction exists; hosted object storage must be configured for production.
-- Phase 7+ provider-specific workflows. Phase 6 AI integration is limited to bounded incident-oversight suggestions and does not create binding project decisions, OSHA determinations, liability conclusions, citations, automatic shutdowns, or contractor discipline.
+- Phase 8+ provider-specific workflows. Phase 7 AI integration is limited to bounded report drafting and does not finalize, approve, invent evidence, create binding project decisions, OSHA determinations, liability conclusions, citations, automatic shutdowns, or contractor discipline.
 
 ## Operational requirements
 
@@ -119,8 +133,9 @@ Status date: 2026-08-09
 - Plan review AI is optional. Configure `PLAN_REVIEW_AI_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `OPENAI_PLAN_REVIEW_MODEL` to use the external AI provider; otherwise the deterministic local fallback is used.
 - Field observation AI currently uses deterministic local enrichment. Future provider configuration must preserve the same human-editable, non-incident, non-scoring boundaries.
 - Incident review AI currently uses deterministic local enrichment. Future provider configuration must preserve the same human-editable, non-legal, non-recordkeeping, non-automatic-decision boundaries.
+- Report drafting AI currently uses deterministic local drafting with deterministic fallback. Future provider configuration must preserve evidence manifests, manual editability, and human-only finalization.
 - Database backups and future object-storage backups are documented in `PROJECT-INTELLIGENCE/architecture/DEPLOYMENT.md`. Hosted PostgreSQL backup configuration is pending deployment provisioning, not optional.
 
 ## Current constraint
 
-Phase 6 Incident Oversight is implemented and verified. Do not begin Phase 7 Reporting or any later phase.
+Phase 7 Safety Reporting is implemented and verified. Do not begin Phase 8 Memory and Skills or any later phase.

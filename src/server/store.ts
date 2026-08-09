@@ -78,6 +78,16 @@ import type {
   IncidentUpdateInput,
   ProjectSafetyDecision,
   ProjectSafetyDecisionInput,
+  ReportCreateInput,
+  ReportExport,
+  ReportFinalizeInput,
+  ReportGenerateInput,
+  ReportRevisionUpdateInput,
+  ReportSearchInput,
+  ReportUpdateInput,
+  SafetyReport,
+  SafetyReportDetail,
+  SafetyReportRevision,
   UserSummary
 } from "../shared/contracts";
 
@@ -185,6 +195,15 @@ export interface AppStore {
   runIncidentAiReview(userId: string, incidentId: string): Promise<IncidentDetail | null>;
   closeIncident(userId: string, incidentId: string, input: IncidentCloseInput): Promise<IncidentDetail | null>;
   reopenIncident(userId: string, incidentId: string, input: IncidentReopenInput): Promise<IncidentDetail | null>;
+  listReports(userId: string, filters: ReportSearchInput): Promise<SafetyReport[]>;
+  createReport(userId: string, input: ReportCreateInput): Promise<SafetyReportDetail>;
+  getReport(userId: string, reportId: string): Promise<SafetyReportDetail | null>;
+  updateReport(userId: string, reportId: string, input: ReportUpdateInput): Promise<SafetyReportDetail | null>;
+  generateReportDraft(userId: string, reportId: string, input: ReportGenerateInput): Promise<SafetyReportDetail | null>;
+  updateReportRevision(userId: string, revisionId: string, input: ReportRevisionUpdateInput): Promise<SafetyReportRevision | null>;
+  finalizeReport(userId: string, reportId: string, input: ReportFinalizeInput): Promise<SafetyReportDetail | null>;
+  createReportRevision(userId: string, reportId: string): Promise<SafetyReportDetail | null>;
+  exportReport(userId: string, reportId: string): Promise<ReportExport | null>;
 }
 
 export class DuplicateEngagementError extends Error {
