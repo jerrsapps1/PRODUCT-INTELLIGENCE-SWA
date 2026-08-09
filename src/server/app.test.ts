@@ -396,12 +396,16 @@ describe("Phase 1 API", () => {
     const project = await createProject(cookie, "Plan Review Project");
     const contractor = await createContractor(cookie, "Plan Review Demo");
     const engagement = await createEngagement(cookie, project.id, contractor.id, "Demolition");
-    const planSource = await uploadTextSource(cookie, "Demo SSSP Rev 0", "The plan includes fall protection inspections and toolbox meetings.");
-    const regulatorySource = await uploadTextSource(cookie, "OSHA Fall Protection", "Fall protection systems must be inspected before use.");
-    const gcSource = await uploadTextSource(cookie, "GC Safety Requirements", "Demolition plans must describe debris removal and site controls.");
-    const unusedSource = await uploadTextSource(cookie, "Unused Global Guidance", "This source should not be selected.");
-    const regulatoryDetail = await getSource(cookie, regulatorySource.id);
-
+    const planSource = await uploadTextSource(cookie, "Demo SSSP Rev 0", [
+      "Workers will inspect fall protection harness anchor lanyard equipment before use.",
+      "Excavation competent person inspections may occur as needed when feasible.",
+      "Toolbox meetings will be held weekly."
+    ].join("\n\n"));
+    const regulatorySource = await uploadTextSource(cookie, "OSHA Fall Requirement", "Fall protection harness anchor lanyard equipment must be inspected before use.");
+    const ambiguousSource = await uploadTextSource(cookie, "OSHA Excavation Requirement", "Excavation competent person inspections must be performed daily before entry.");
+    const gcSource = await uploadTextSource(cookie, "GC Safety Requirements", "Demolition debris removal and site controls must be described in the plan.");
+    const guidanceSource = await uploadTextSource(cookie, "Planning Guidance", "Weekly toolbox meetings are recommended to improve communication.");
+    const unusedSource = await uploadTextSource(cookie, "Unused Global Guidance", "Respiratory protection fit testing is required for unrelated work.");
     const created = await fetch(`${baseUrl}/api/engagements/${engagement.id}/safety-plans`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
@@ -433,7 +437,6 @@ describe("Phase 1 API", () => {
         selectedReferences: [
           {
             sourceId: regulatorySource.id,
-            sourceChunkId: regulatoryDetail.chunks[0]?.id,
             authorityClassification: "regulatory_requirement",
             citationLabel: "OSHA excerpt"
           },
@@ -441,20 +444,38 @@ describe("Phase 1 API", () => {
             sourceId: gcSource.id,
             authorityClassification: "gc_policy",
             citationLabel: "GC requirements"
+          },
+          {
+            sourceId: ambiguousSource.id,
+            authorityClassification: "regulatory_requirement",
+            citationLabel: "Excavation requirement"
+          },
+          {
+            sourceId: guidanceSource.id,
+            authorityClassification: "general_reference",
+            citationLabel: "Planning guidance"
           }
         ]
       })
     });
     expect(reviewRun.status).toBe(201);
-    const reviewed = await json<{ safetyPlan: { plan: { reviewStatus: string; approvedAt: string | null }; review: { id: string; status: string; contractorFacingSummary: string }; references: Array<{ sourceId: string }>; findings: Array<{ id: string; authority: string; findingType: string; referenceSourceId: string | null; aiExplanation: string | null; origin: string }> } }>(reviewRun);
+    const reviewed = await json<{ safetyPlan: { plan: { reviewStatus: string; approvedAt: string | null }; review: { id: string; status: string; contractorFacingSummary: string; assistantProvider: string | null; assistantModel: string | null }; references: Array<{ sourceId: string }>; findings: Array<{ id: string; authority: string; findingType: string; title: string; referenceSourceId: string | null; referenceSourceChunkId: string | null; aiExplanation: string | null; contractorFacingRecommendation: string | null; origin: string }> } }>(reviewRun);
     expect(reviewed.safetyPlan.plan).toEqual(expect.objectContaining({ reviewStatus: "pending", approvedAt: null }));
     expect(reviewed.safetyPlan.review.status).toBe("pending");
-    expect(reviewed.safetyPlan.references.map((reference) => reference.sourceId)).toEqual([regulatorySource.id, gcSource.id]);
+    expect(reviewed.safetyPlan.review.assistantProvider).toBe("local-review-assistant");
+    expect(reviewed.safetyPlan.review.assistantModel).toBe("deterministic-evidence-review-v2");
+    expect(reviewed.safetyPlan.references.map((reference) => reference.sourceId)).toEqual([regulatorySource.id, gcSource.id, ambiguousSource.id, guidanceSource.id]);
     expect(reviewed.safetyPlan.references.map((reference) => reference.sourceId)).not.toContain(unusedSource.id);
-    expect(reviewed.safetyPlan.findings).toHaveLength(2);
+    expect(reviewed.safetyPlan.findings.length).toBeGreaterThanOrEqual(4);
     expect(reviewed.safetyPlan.findings[0]).toEqual(expect.objectContaining({ authority: "regulatory_requirement", origin: "assistant" }));
     expect(reviewed.safetyPlan.findings[0].referenceSourceId).toBeTruthy();
-    expect(reviewed.safetyPlan.findings[0].aiExplanation).toContain("Reviewer");
+    expect(reviewed.safetyPlan.findings[0].referenceSourceChunkId).toBeTruthy();
+    expect(reviewed.safetyPlan.findings[0].aiExplanation?.toLowerCase()).toContain("reviewer");
+    expect(reviewed.safetyPlan.findings.some((finding) => finding.findingType === "compliant" && finding.authority === "regulatory_requirement")).toBe(true);
+    expect(reviewed.safetyPlan.findings.some((finding) => finding.findingType === "deficiency" && finding.authority === "project_requirement" && finding.referenceSourceId === gcSource.id)).toBe(true);
+    expect(reviewed.safetyPlan.findings.some((finding) => finding.authority === "recommendation" && finding.referenceSourceId === guidanceSource.id && finding.findingType !== "deficiency")).toBe(true);
+    expect(reviewed.safetyPlan.findings.some((finding) => finding.findingType === "reviewer_decision")).toBe(true);
+    expect(reviewed.safetyPlan.findings.every((finding) => !finding.title.toLowerCase().includes("respiratory"))).toBe(true);
 
     const editedFinding = await fetch(`${baseUrl}/api/plan-findings/${reviewed.safetyPlan.findings[0].id}`, {
       method: "PATCH",
@@ -470,6 +491,21 @@ describe("Phase 1 API", () => {
       })
     });
     expect(editedFinding.status).toBe(200);
+
+    const rerunAfterEdit = await fetch(`${baseUrl}/api/safety-plans/${createdBody.safetyPlan.plan.id}/review-runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({
+        selectedReferences: [{ sourceId: regulatorySource.id, authorityClassification: "regulatory_requirement", citationLabel: "OSHA excerpt" }]
+      })
+    });
+    expect(rerunAfterEdit.status).toBe(201);
+    const rerunBody = await json<{ safetyPlan: { findings: Array<{ id: string; reviewerExplanation: string | null; resolved: boolean }> } }>(rerunAfterEdit);
+    expect(rerunBody.safetyPlan.findings).toContainEqual(expect.objectContaining({
+      id: reviewed.safetyPlan.findings[0].id,
+      reviewerExplanation: "Clarify inspection frequency.",
+      resolved: true
+    }));
 
     const reviewerFinding = await fetch(`${baseUrl}/api/plan-findings`, {
       method: "POST",

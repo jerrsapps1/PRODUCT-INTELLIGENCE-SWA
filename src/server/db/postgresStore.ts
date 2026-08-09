@@ -58,6 +58,7 @@ import {
   type AppStore,
   type StoredUser
 } from "../store";
+import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 
 const { Pool } = pg;
 
@@ -1515,15 +1516,23 @@ export class PostgresStore implements AppStore {
     const planSource = await this.getSource(userId, revision.sourceId);
     if (!planSource) throw new Error("Source not found");
     if (planSource.extractionStatus === "failed") throw new Error("Plan extraction failed");
+    const existing = await this.pool.query("SELECT * FROM plan_reviews WHERE revision_id = $1 ORDER BY created_at DESC LIMIT 1", [revision.id]);
+    if (existing.rows[0] && await this.hasHumanPlanReviewWork(existing.rows[0].id)) {
+      const preserved = mapPlanReview(existing.rows[0]);
+      await this.addPlanAudit(userId, planId, preserved.id, "review_run_skipped", "Existing reviewer-edited review was preserved; no draft overwrite occurred");
+      return (await this.getSafetyPlanDetail(userId, planId)) as SafetyPlanDetail;
+    }
+    await this.pool.query("DELETE FROM plan_reviews WHERE revision_id = $1", [revision.id]);
     const reviewResult = await this.pool.query(
       `INSERT INTO plan_reviews
-       (plan_id, revision_id, status, assistant_provider, assistant_model, processing_status, prompt_config_version)
-       VALUES ($1, $2, 'pending', 'local-review-assistant', 'transparent-selected-source-v1', 'completed', 'phase4-local-v1')
+       (plan_id, revision_id, status, processing_status)
+       VALUES ($1, $2, 'pending', 'running')
        RETURNING *`,
       [planId, revision.id]
     );
     const review = mapPlanReview(reviewResult.rows[0]);
     const references: PlanReviewReference[] = [];
+    const referenceContexts: ReviewReferenceContext[] = [];
     for (const referenceInput of input.selectedReferences) {
       const source = await this.getSource(userId, referenceInput.sourceId);
       if (!source) throw new Error("Source not found");
@@ -1535,11 +1544,49 @@ export class PostgresStore implements AppStore {
         [review.id, source.id, clean(referenceInput.sourceChunkId), referenceInput.authorityClassification, clean(referenceInput.citationLabel)]
       );
       references.push(mapPlanReference(refResult.rows[0], source));
+      referenceContexts.push({ ...referenceInput, source });
     }
-    const findings = this.generateDraftFindings(review, planSource, references);
+    const assistant = await runPlanReviewAssistant({ planSource, references: referenceContexts });
+    const findings = assistant.findings.map((finding, index) => ({
+      id: randomUUID(),
+      reviewId: review.id,
+      title: finding.title,
+      findingType: finding.findingType,
+      authority: finding.authority,
+      planSourceId: planSource.id,
+      planSourceChunkId: finding.planSourceChunkId,
+      referenceSourceId: finding.referenceSourceId,
+      referenceSourceChunkId: finding.referenceSourceChunkId,
+      referenceCitationLabel: finding.referenceCitationLabel,
+      aiExplanation: finding.aiExplanation,
+      reviewerExplanation: finding.reviewerExplanation,
+      reviewerNotes: null,
+      contractorFacingRecommendation: finding.contractorFacingRecommendation,
+      recommendedRevisionText: finding.recommendedRevisionText,
+      reviewerDecision: finding.reviewerDecision,
+      resolved: false,
+      notApplicable: false,
+      origin: "assistant" as const,
+      sortOrder: index,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }));
     for (const finding of findings) await this.insertPlanFinding(finding);
-    const summary = this.buildRecommendationSummary(plan, findings, references);
-    await this.pool.query("UPDATE plan_reviews SET contractor_facing_summary = $2, updated_at = now() WHERE id = $1", [review.id, summary]);
+    await this.pool.query(
+      `UPDATE plan_reviews
+       SET assistant_provider = $2, assistant_model = $3, processing_status = $4, error_state = $5,
+           prompt_config_version = $6, contractor_facing_summary = $7, updated_at = now()
+       WHERE id = $1`,
+      [
+        review.id,
+        assistant.provider,
+        assistant.model,
+        assistant.processingStatus,
+        assistant.errorState,
+        assistant.promptConfigVersion,
+        assistant.contractorFacingSummary
+      ]
+    );
     await this.addPlanAudit(userId, planId, review.id, "review_run_completed", `Generated ${findings.length} draft findings from selected sources`);
     return (await this.getSafetyPlanDetail(userId, planId)) as SafetyPlanDetail;
   }
@@ -1681,6 +1728,22 @@ export class PostgresStore implements AppStore {
       [userId, reviewId]
     );
     return result.rows[0] ? mapPlanReview(result.rows[0]) : null;
+  }
+
+  private async hasHumanPlanReviewWork(reviewId: string): Promise<boolean> {
+    const review = await this.pool.query("SELECT * FROM plan_reviews WHERE id = $1", [reviewId]);
+    const findings = await this.pool.query("SELECT * FROM plan_findings WHERE review_id = $1", [reviewId]);
+    const currentReview = review.rows[0] ? mapPlanReview(review.rows[0]) : null;
+    return Boolean(
+      currentReview?.internalReviewerNotes ||
+      findings.rows.map(mapPlanFinding).some((finding) =>
+        finding.origin === "reviewer" ||
+        finding.reviewerNotes ||
+        finding.resolved ||
+        finding.notApplicable ||
+        (finding.reviewerExplanation && finding.reviewerExplanation !== finding.aiExplanation)
+      )
+    );
   }
 
   private async getFindingForUser(userId: string, findingId: string): Promise<PlanFinding | null> {

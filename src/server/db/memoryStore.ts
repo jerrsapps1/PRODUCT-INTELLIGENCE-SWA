@@ -57,6 +57,7 @@ import {
   type AppStore,
   type StoredUser
 } from "../store";
+import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 
 function now(): string {
   return new Date().toISOString();
@@ -700,16 +701,21 @@ export class MemoryStore implements AppStore {
     if (planSource.extractionStatus === "failed") throw new Error("Plan extraction failed");
     if (input.selectedReferences.length === 0) throw new Error("At least one review source is required");
     const timestamp = now();
+    const existingReview = [...this.planReviews.values()].find((item) => item.revisionId === revision.id);
+    if (existingReview && this.hasHumanPlanReviewWork(existingReview.id)) {
+      this.addPlanAudit(userId, planId, existingReview.id, "review_run_skipped", "Existing reviewer-edited review was preserved; no draft overwrite occurred");
+      return (await this.getSafetyPlanDetail(userId, planId)) as SafetyPlanDetail;
+    }
     const review: PlanReview = {
       id: randomUUID(),
       planId,
       revisionId: revision.id,
       status: "pending",
-      assistantProvider: "local-review-assistant",
-      assistantModel: "transparent-selected-source-v1",
-      processingStatus: "completed",
+      assistantProvider: null,
+      assistantModel: null,
+      processingStatus: "running",
       errorState: null,
-      promptConfigVersion: "phase4-local-v1",
+      promptConfigVersion: null,
       contractorFacingSummary: "",
       internalReviewerNotes: "",
       createdAt: timestamp,
@@ -717,6 +723,7 @@ export class MemoryStore implements AppStore {
     };
     [...this.planReviews.values()].filter((item) => item.revisionId === revision.id).forEach((item) => this.planReviews.delete(item.id));
     this.planReviews.set(review.id, review);
+    const referenceContexts: ReviewReferenceContext[] = [];
     for (const referenceInput of input.selectedReferences) {
       const source = await this.getSource(userId, referenceInput.sourceId);
       if (!source) throw new Error("Source not found");
@@ -732,12 +739,42 @@ export class MemoryStore implements AppStore {
         source
       };
       this.planReferences.set(reference.id, reference);
+      referenceContexts.push({ ...referenceInput, source });
     }
-    const generatedFindings = await this.generateDraftFindings(review, planSource, input.selectedReferences);
+    const assistant = await runPlanReviewAssistant({ planSource, references: referenceContexts });
+    const generatedFindings = assistant.findings.map((finding, index) => ({
+      id: randomUUID(),
+      reviewId: review.id,
+      title: finding.title,
+      findingType: finding.findingType,
+      authority: finding.authority,
+      planSourceId: planSource.id,
+      planSourceChunkId: finding.planSourceChunkId,
+      referenceSourceId: finding.referenceSourceId,
+      referenceSourceChunkId: finding.referenceSourceChunkId,
+      referenceCitationLabel: finding.referenceCitationLabel,
+      aiExplanation: finding.aiExplanation,
+      reviewerExplanation: finding.reviewerExplanation,
+      reviewerNotes: null,
+      contractorFacingRecommendation: finding.contractorFacingRecommendation,
+      recommendedRevisionText: finding.recommendedRevisionText,
+      reviewerDecision: finding.reviewerDecision,
+      resolved: false,
+      notApplicable: false,
+      origin: "assistant" as const,
+      sortOrder: index,
+      createdAt: now(),
+      updatedAt: now()
+    }));
     generatedFindings.forEach((finding) => this.planFindings.set(finding.id, finding));
     const updatedReview = {
       ...review,
-      contractorFacingSummary: this.buildRecommendationSummary(plan, generatedFindings, input.selectedReferences),
+      assistantProvider: assistant.provider,
+      assistantModel: assistant.model,
+      processingStatus: assistant.processingStatus,
+      errorState: assistant.errorState,
+      promptConfigVersion: assistant.promptConfigVersion,
+      contractorFacingSummary: assistant.contractorFacingSummary,
       updatedAt: now()
     };
     this.planReviews.set(review.id, updatedReview);
@@ -861,6 +898,21 @@ export class MemoryStore implements AppStore {
     const review = this.planReviews.get(reviewId);
     if (!review || !(await this.getPlanForUser(userId, review.planId))) return null;
     return review;
+  }
+
+  private hasHumanPlanReviewWork(reviewId: string): boolean {
+    const review = this.planReviews.get(reviewId);
+    const findings = [...this.planFindings.values()].filter((finding) => finding.reviewId === reviewId);
+    return Boolean(
+      review?.internalReviewerNotes ||
+      findings.some((finding) =>
+        finding.origin === "reviewer" ||
+        finding.reviewerNotes ||
+        finding.resolved ||
+        finding.notApplicable ||
+        (finding.reviewerExplanation && finding.reviewerExplanation !== finding.aiExplanation)
+      )
+    );
   }
 
   private createRevisionRecord(

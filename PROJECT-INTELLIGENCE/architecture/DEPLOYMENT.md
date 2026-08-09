@@ -14,6 +14,7 @@ Status: Phase 1 foundation documented; hosted infrastructure pending deployment 
 - Backend/API: Render-hosted Node process from `dist/server/index.js`.
 - Structured data: PostgreSQL, provided through `DATABASE_URL`.
 - File/object data: local object storage in development through `LOCAL_STORAGE_DIR`; managed external object storage required for production. PostgreSQL stores storage references, not large binary files.
+- Optional plan-review AI: server-side only. Configure `PLAN_REVIEW_AI_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `OPENAI_PLAN_REVIEW_MODEL`; no AI secrets belong in frontend code.
 
 ## PostgreSQL Backup and Recovery
 

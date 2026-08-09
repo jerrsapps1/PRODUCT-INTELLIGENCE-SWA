@@ -20,15 +20,20 @@ The submitted contractor plan remains an unchanged source record. Review artifac
 
 ## Review Assistant
 
-Phase 4 uses a local, provider-agnostic review assistant placeholder named `local-review-assistant`. It does not call an external AI provider and does not require API keys.
+Phase 4 uses a provider-agnostic review assistant interface.
 
-The assistant only uses:
+- When `PLAN_REVIEW_AI_PROVIDER=openai` and `OPENAI_API_KEY` is configured, the server can call OpenAI's Responses API with bounded selected-source context and structured JSON output.
+- When no external provider is configured, the server uses `local-review-assistant`, a deterministic evidence-review fallback that evaluates selected source chunks against submitted plan chunks.
+
+The assistant path only uses:
 
 - the submitted plan source extraction,
 - explicitly selected review reference sources,
 - source/chunk provenance already created by Phase 2.
 
 It generates editable draft findings and a contractor-facing recommendation draft. It cannot approve a plan.
+
+The deterministic fallback can recognize direct coverage, omissions, guidance-only recommendations, and ambiguous conditional language in synthetic and simple extracted text. It is not a substitute for full professional review quality on complex plans.
 
 ## Authority Distinction
 

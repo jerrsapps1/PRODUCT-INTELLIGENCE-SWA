@@ -1,6 +1,6 @@
 # Phase 4 Safety Plan Review
 
-Status: Implemented for review on 2026-08-09
+Status: Formally complete on 2026-08-09
 
 ## Scope Delivered
 
@@ -21,9 +21,12 @@ Status: Implemented for review on 2026-08-09
 
 ## Review Assistant
 
-Phase 4 introduces a provider-agnostic local review assistant placeholder. It is not an external AI integration and requires no API key.
+Phase 4 introduces a provider-agnostic review assistant architecture.
 
-The assistant uses only the submitted plan extraction and explicitly selected review sources. It generates draft findings and recommendation text for reviewer editing. It cannot approve a plan, grant exceptions, make legal determinations, or determine contractor eligibility.
+- External AI path: OpenAI Responses API can be used when `PLAN_REVIEW_AI_PROVIDER=openai` and `OPENAI_API_KEY` are configured server-side.
+- No-provider path: `local-review-assistant` provides deterministic selected-source comparison for environments without AI credentials.
+
+Both paths use only the submitted plan extraction and explicitly selected review sources. They generate draft findings and recommendation text for reviewer editing. They cannot approve a plan, grant exceptions, make legal determinations, or determine contractor eligibility.
 
 ## Source and Evidence Rules
 
@@ -55,5 +58,7 @@ Automated tests cover:
 - New revision creation without overwriting prior revision.
 - Resubmission comparison association.
 - Failed extraction review rejection and safe retry path.
+- Review-quality behavior for synthetic compliant, incomplete, missing, guidance-only, ambiguous, and unrelated-source cases.
+- Rerun preservation of reviewer-edited review content.
 
-Browser verification is required before formal closure for desktop side-by-side review and iPad/tablet review behavior.
+Browser verification confirmed desktop side-by-side review and iPad/tablet review behavior before formal closure.
