@@ -69,6 +69,14 @@ export const reportTypes = ["daily", "weekly", "monthly", "custom"] as const;
 export const reportFormats = ["narrative", "structured"] as const;
 export const reportStatuses = ["draft", "finalized"] as const;
 export const reportGenerationStatuses = ["not_generated", "generating", "ready", "failed"] as const;
+export const assistantRetrievalScopes = ["current_project", "current_contractor", "selected_projects", "global_library", "entire_workspace"] as const;
+export const assistantMessageRoles = ["user", "assistant", "system"] as const;
+export const memoryScopes = ["global", "project"] as const;
+export const instructionScopes = ["global", "project"] as const;
+export const skillScopes = ["global", "project"] as const;
+export const assistantActionTypes = ["READ", "DRAFT", "PROPOSED_WRITE"] as const;
+export const proposedActionStatuses = ["proposed", "edited", "confirmed", "executed", "rejected", "failed", "superseded"] as const;
+export const assistantRunStatuses = ["pending", "retrieving", "generating", "awaiting_confirmation", "completed", "partial", "failed"] as const;
 
 export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, "Project name is required").max(160),
@@ -512,6 +520,93 @@ export const reportFinalizeSchema = z.object({
   reviewerNote: z.string().trim().max(4000).optional().or(z.literal(""))
 });
 
+export const assistantContextSchema = z.object({
+  projectId: z.string().uuid(),
+  contractorId: z.string().uuid().optional().or(z.literal("")),
+  retrievalScope: z.enum(assistantRetrievalScopes).default("current_project"),
+  selectedProjectIds: z.array(z.string().uuid()).default([]),
+  activeSkillId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const assistantConversationCreateSchema = z.object({
+  projectId: z.string().uuid(),
+  title: z.string().trim().min(1).max(180),
+  contractorId: z.string().uuid().optional().or(z.literal("")),
+  retrievalScope: z.enum(assistantRetrievalScopes).default("current_project"),
+  activeSkillId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const assistantConversationUpdateSchema = z.object({
+  title: z.string().trim().min(1).max(180).optional(),
+  contractorId: z.string().uuid().optional().or(z.literal("")),
+  retrievalScope: z.enum(assistantRetrievalScopes).optional(),
+  selectedProjectIds: z.array(z.string().uuid()).optional(),
+  activeSkillId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const assistantMessageSendSchema = z.object({
+  content: z.string().trim().min(1).max(12000)
+});
+
+export const memoryEntryCreateSchema = z.object({
+  scope: z.enum(memoryScopes),
+  projectId: z.string().uuid().optional().or(z.literal("")),
+  content: z.string().trim().min(1).max(12000),
+  provenanceType: z.string().trim().max(80).optional().or(z.literal("")),
+  provenanceId: z.string().trim().max(120).optional().or(z.literal(""))
+});
+
+export const memoryEntryUpdateSchema = z.object({
+  content: z.string().trim().min(1).max(12000).optional(),
+  active: z.boolean().optional()
+});
+
+export const instructionDocumentSaveSchema = z.object({
+  scope: z.enum(instructionScopes),
+  projectId: z.string().uuid().optional().or(z.literal("")),
+  area: z.string().trim().min(1).max(100),
+  title: z.string().trim().min(1).max(180),
+  markdown: z.string().trim().min(1).max(30000)
+});
+
+export const skillSaveSchema = z.object({
+  scope: z.enum(skillScopes),
+  projectId: z.string().uuid().optional().or(z.literal("")),
+  name: z.string().trim().min(2).max(120),
+  description: z.string().trim().min(8).max(1000),
+  triggerDescription: z.string().trim().min(8).max(1200),
+  guidedPurpose: z.string().trim().max(3000).optional().or(z.literal("")),
+  guidedInputs: z.string().trim().max(3000).optional().or(z.literal("")),
+  guidedOutputs: z.string().trim().max(3000).optional().or(z.literal("")),
+  guidedRules: z.string().trim().max(5000).optional().or(z.literal("")),
+  guidedAuthorityLimits: z.string().trim().max(3000).optional().or(z.literal("")),
+  markdown: z.string().trim().min(1).max(40000),
+  active: z.boolean().default(true)
+});
+
+export const skillActivationSchema = z.object({
+  activeSkillId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const assistantActionInvokeSchema = z.object({
+  conversationId: z.string().uuid().optional(),
+  actionName: z.string().trim().min(1).max(120),
+  input: z.record(z.unknown()).default({})
+});
+
+export const proposedActionEditSchema = z.object({
+  proposedChange: z.record(z.unknown()).optional(),
+  rationale: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
+export const proposedActionConfirmSchema = z.object({
+  confirmationNote: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
+export const proposedActionRejectSchema = z.object({
+  rejectionReason: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
 export type FederalClassification = (typeof federalClassifications)[number];
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ContractorCreateInput = z.infer<typeof contractorCreateSchema>;
@@ -599,6 +694,27 @@ export type ReportUpdateInput = z.infer<typeof reportUpdateSchema>;
 export type ReportRevisionUpdateInput = z.infer<typeof reportRevisionUpdateSchema>;
 export type ReportGenerateInput = z.infer<typeof reportGenerateSchema>;
 export type ReportFinalizeInput = z.infer<typeof reportFinalizeSchema>;
+export type AssistantRetrievalScope = (typeof assistantRetrievalScopes)[number];
+export type AssistantMessageRole = (typeof assistantMessageRoles)[number];
+export type MemoryScope = (typeof memoryScopes)[number];
+export type InstructionScope = (typeof instructionScopes)[number];
+export type SkillScope = (typeof skillScopes)[number];
+export type AssistantActionType = (typeof assistantActionTypes)[number];
+export type ProposedActionStatus = (typeof proposedActionStatuses)[number];
+export type AssistantRunStatus = (typeof assistantRunStatuses)[number];
+export type AssistantContextInput = z.infer<typeof assistantContextSchema>;
+export type AssistantConversationCreateInput = z.infer<typeof assistantConversationCreateSchema>;
+export type AssistantConversationUpdateInput = z.infer<typeof assistantConversationUpdateSchema>;
+export type AssistantMessageSendInput = z.infer<typeof assistantMessageSendSchema>;
+export type MemoryEntryCreateInput = z.infer<typeof memoryEntryCreateSchema>;
+export type MemoryEntryUpdateInput = z.infer<typeof memoryEntryUpdateSchema>;
+export type InstructionDocumentSaveInput = z.infer<typeof instructionDocumentSaveSchema>;
+export type SkillSaveInput = z.infer<typeof skillSaveSchema>;
+export type SkillActivationInput = z.infer<typeof skillActivationSchema>;
+export type AssistantActionInvokeInput = z.infer<typeof assistantActionInvokeSchema>;
+export type ProposedActionEditInput = z.infer<typeof proposedActionEditSchema>;
+export type ProposedActionConfirmInput = z.infer<typeof proposedActionConfirmSchema>;
+export type ProposedActionRejectInput = z.infer<typeof proposedActionRejectSchema>;
 
 export interface UserSummary {
   id: string;
@@ -1223,6 +1339,173 @@ export interface ReportExport {
   filename: string;
   contentType: string;
   content: string;
+}
+
+export interface AssistantContext {
+  projectId: string;
+  contractorId: string | null;
+  retrievalScope: AssistantRetrievalScope;
+  selectedProjectIds: string[];
+  activeSkillId: string | null;
+}
+
+export interface AssistantRetrievalManifest {
+  scope: AssistantRetrievalScope;
+  projectIds: string[];
+  contractorId: string | null;
+  sourceIds: string[];
+  sourceChunkIds: string[];
+  operationalRecords: Array<{ type: string; id: string; label: string }>;
+  memoryIds: string[];
+  instructionIds: string[];
+  skillId: string | null;
+  skillVersion: number | null;
+}
+
+export interface AssistantContextSummary {
+  scope: AssistantRetrievalScope;
+  sources: number;
+  sourceChunks: number;
+  operationalRecords: number;
+  memoryEntries: number;
+  instructions: string[];
+  activeSkill: string | null;
+  activeSkillVersion: number | null;
+}
+
+export interface AssistantConversation {
+  id: string;
+  projectId: string;
+  ownerUserId: string;
+  title: string;
+  context: AssistantContext;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssistantMessage {
+  id: string;
+  conversationId: string;
+  role: AssistantMessageRole;
+  content: string;
+  provider: string | null;
+  model: string | null;
+  runId: string | null;
+  createdAt: string;
+}
+
+export interface AssistantRun {
+  id: string;
+  conversationId: string | null;
+  status: AssistantRunStatus;
+  provider: string | null;
+  model: string | null;
+  contextSummary: AssistantContextSummary;
+  retrievalManifest: AssistantRetrievalManifest;
+  errorState: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface AssistantConversationDetail extends AssistantConversation {
+  messages: AssistantMessage[];
+  runs: AssistantRun[];
+}
+
+export interface MemoryEntry {
+  id: string;
+  scope: MemoryScope;
+  projectId: string | null;
+  content: string;
+  provenanceType: string | null;
+  provenanceId: string | null;
+  createdByUserId: string;
+  confirmedByUserId: string | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InstructionDocument {
+  id: string;
+  scope: InstructionScope;
+  projectId: string | null;
+  area: string;
+  title: string;
+  markdown: string;
+  version: number;
+  active: boolean;
+  createdByUserId: string;
+  updatedByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssistantSkill {
+  id: string;
+  scope: SkillScope;
+  projectId: string | null;
+  name: string;
+  description: string;
+  triggerDescription: string;
+  guidedPurpose: string | null;
+  guidedInputs: string | null;
+  guidedOutputs: string | null;
+  guidedRules: string | null;
+  guidedAuthorityLimits: string | null;
+  markdown: string;
+  version: number;
+  active: boolean;
+  createdByUserId: string;
+  updatedByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssistantActionDescriptor {
+  name: string;
+  description: string;
+  actionType: AssistantActionType;
+  confirmationRequired: boolean;
+}
+
+export interface AssistantActionResult {
+  actionName: string;
+  actionType: AssistantActionType;
+  result: unknown;
+  proposal?: ProposedAction;
+  run?: AssistantRun;
+}
+
+export interface ProposedAction {
+  id: string;
+  conversationId: string | null;
+  originMessageId: string | null;
+  actionName: string;
+  targetType: string;
+  targetId: string | null;
+  currentState: Record<string, unknown>;
+  proposedChange: Record<string, unknown>;
+  rationale: string | null;
+  evidence: AssistantRetrievalManifest;
+  createdByUserId: string;
+  status: ProposedActionStatus;
+  confirmedByUserId: string | null;
+  confirmationNote: string | null;
+  rejectionReason: string | null;
+  executedResult: Record<string, unknown> | null;
+  errorState: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssistantDashboard {
+  conversations: AssistantConversation[];
+  memoryEntries: MemoryEntry[];
+  instructions: InstructionDocument[];
+  skills: AssistantSkill[];
+  proposedActions: ProposedAction[];
+  actions: AssistantActionDescriptor[];
 }
 
 export interface ApiErrorBody {

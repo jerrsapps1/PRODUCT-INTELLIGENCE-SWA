@@ -20,6 +20,7 @@ Status date: 2026-08-09
 - The field-observation model preserves original field notes and photo source associations separately from editable AI suggestions, reviewer fields, follow-up state, and plan-finding links.
 - The incident-oversight model preserves contractor incident files separately from GC/project review, recommendations, project decisions, follow-up, and closure history.
 - The safety-reporting model preserves editable report records, evidence manifests, revisions, finalization status, and audit events separately from source records and underlying project evidence.
+- The assistant-intelligence model preserves conversations, messages, retrieval manifests, memory, instructions, skills, assistant runs, and proposed actions separately from evidence and authoritative operational records.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1
@@ -119,11 +120,27 @@ Status date: 2026-08-09
 - Report audit events for creation, generation, fallback, editing, revision creation, and finalization.
 - Responsive reporting controls in the existing desktop/tablet workspace.
 
+## Implemented in Phase 8
+
+- Persistent project-linked assistant conversations with visible project, contractor, retrieval scope, and active skill context.
+- Bounded context/retrieval manifests that distinguish source chunks, operational records, memory, instructions, and skills.
+- Current Project default scope, explicit contractor context clearing, selected-project scope, and visible broader scope choices.
+- Global and Project Memory with structured metadata, Markdown-style editing, provenance, active/archive state, and confirmation-only assistant proposal path.
+- Global and Project Instructions with Markdown editing, scope separation, version increments, and active instruction visibility.
+- Global and Project Skills with guided builder fields, advanced Markdown instructions, validation, active status, and versioning.
+- Server-side assistant action registry with READ, DRAFT, and PROPOSED_WRITE actions only.
+- Draft actions for project meeting briefs and contractor follow-up wording.
+- Proposed-write actions for memory saves and observation follow-up updates that require authenticated human confirmation before execution.
+- Proposed-action edit/confirm/reject lifecycle with evidence manifest, current/proposed state, execution result, and failure preservation.
+- Deterministic provider-agnostic assistant orchestration and honest provider-failure reporting.
+- Prompt-injection boundary where source text, memory, instructions, and skill Markdown cannot bypass registered actions, authorization, or confirmation.
+- Responsive assistant console/workbench controls in the existing three-panel workspace.
+
 ## Not implemented by design
 
-- Embeddings, vector search, general crawling, OSHA recordkeeping, workers compensation claims, insurance claims, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
+- Embeddings, vector search, general crawling, OSHA recordkeeping, workers compensation claims, insurance claims, historical scoring, billing, portals, and worker management.
 - Production object-storage provider integration. The abstraction exists; hosted object storage must be configured for production.
-- Phase 8+ provider-specific workflows. Phase 7 AI integration is limited to bounded report drafting and does not finalize, approve, invent evidence, create binding project decisions, OSHA determinations, liability conclusions, citations, automatic shutdowns, or contractor discipline.
+- Phase 9+ historical intelligence. Phase 8 assistant integration is limited to bounded registered actions and does not perform autonomous/background work, automatic authoritative writes, automatic memory writes, unrestricted SQL/database access, shell/filesystem access, executable skill scripts, contractor scoring, external messaging, or public sharing.
 
 ## Operational requirements
 
@@ -134,8 +151,9 @@ Status date: 2026-08-09
 - Field observation AI currently uses deterministic local enrichment. Future provider configuration must preserve the same human-editable, non-incident, non-scoring boundaries.
 - Incident review AI currently uses deterministic local enrichment. Future provider configuration must preserve the same human-editable, non-legal, non-recordkeeping, non-automatic-decision boundaries.
 - Report drafting AI currently uses deterministic local drafting with deterministic fallback. Future provider configuration must preserve evidence manifests, manual editability, and human-only finalization.
+- Assistant orchestration currently uses deterministic local context assembly and bounded registered actions. Future provider configuration must preserve server-side action validation, context transparency, and human-only confirmation for authoritative writes.
 - Database backups and future object-storage backups are documented in `PROJECT-INTELLIGENCE/architecture/DEPLOYMENT.md`. Hosted PostgreSQL backup configuration is pending deployment provisioning, not optional.
 
 ## Current constraint
 
-Phase 7 Safety Reporting is implemented and verified. Do not begin Phase 8 Memory and Skills or any later phase.
+Phase 8 Assistant, Memory & Skills is implemented and verified. Do not begin Phase 9 Historical Intelligence or any later phase.

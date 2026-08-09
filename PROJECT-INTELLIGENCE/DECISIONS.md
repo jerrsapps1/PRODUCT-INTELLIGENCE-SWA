@@ -11,6 +11,10 @@ Confirmed behavior may not change silently. Record proposed changes here before 
 | D-003 | Approved baseline | Preserve original evidence; use editable internal drafts and exported artifacts. | Supports provenance, defensibility, and human control. |
 | D-004 | Approved baseline | Use project-specific contractor engagements with separate contractor master history. | Prevents cross-project approval/data leakage while enabling informed future evaluation. |
 | D-005 | Approved baseline | Do not start coding before phased implementation preparation is approved. | Establishes controlled implementation readiness. |
+| D-006 | Approved by user | Use `Read -> Analyze -> Draft -> Propose -> Human Confirm -> Commit` as the assistant operating doctrine. | Keeps AI assistance useful while preserving human control over authoritative operational changes. |
+| D-007 | Approved by user | Assistant access must use a bounded server-side action registry rather than unrestricted SQL, arbitrary database access, shell access, filesystem access, or unregistered backend calls. | Prevents model output, source prompt injection, memory, instructions, or skills from bypassing authorization and domain validation. |
+| D-008 | Approved by user | Current Project is the default retrieval scope; contractor narrowing and cross-project/workspace retrieval must be visible and deliberate. | Prevents silent cross-project leakage while allowing explicit broader analysis when the user chooses it. |
+| D-009 | Approved by user | Evidence, operational records, memory, instructions, skills, AI drafts, and proposed actions remain distinct persisted concepts with separate provenance. | Prevents memory or AI output from becoming evidence/source of truth and supports auditability. |
 
 ## Proposal Template
 

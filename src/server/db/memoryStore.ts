@@ -79,6 +79,30 @@ import type {
   IncidentUpdateInput,
   ProjectSafetyDecision,
   ProjectSafetyDecisionInput,
+  AssistantActionDescriptor,
+  AssistantActionInvokeInput,
+  AssistantActionResult,
+  AssistantContext,
+  AssistantContextSummary,
+  AssistantConversation,
+  AssistantConversationCreateInput,
+  AssistantConversationDetail,
+  AssistantConversationUpdateInput,
+  AssistantDashboard,
+  AssistantMessage,
+  AssistantMessageSendInput,
+  AssistantRetrievalManifest,
+  AssistantRun,
+  AssistantSkill,
+  InstructionDocument,
+  InstructionDocumentSaveInput,
+  MemoryEntry,
+  MemoryEntryCreateInput,
+  MemoryEntryUpdateInput,
+  ProposedAction,
+  ProposedActionConfirmInput,
+  ProposedActionEditInput,
+  ProposedActionRejectInput,
   ReportCreateInput,
   ReportExport,
   ReportEvidenceManifest,
@@ -93,6 +117,8 @@ import type {
   SafetyReportAuditEvent,
   SafetyReportDetail,
   SafetyReportRevision,
+  SkillActivationInput,
+  SkillSaveInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -181,6 +207,18 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] as string);
 }
 
+const assistantActionDescriptors: AssistantActionDescriptor[] = [
+  { name: "get_project_status", description: "Summarize current project readiness, observations, incidents, decisions, and reports.", actionType: "READ", confirmationRequired: false },
+  { name: "get_open_observation_followup", description: "List open observation follow-up for a project.", actionType: "READ", confirmationRequired: false },
+  { name: "get_open_incident_followup", description: "List open incident follow-up for a project.", actionType: "READ", confirmationRequired: false },
+  { name: "get_reports", description: "List project safety reports.", actionType: "READ", confirmationRequired: false },
+  { name: "retrieve_sources", description: "Retrieve project/global source chunks with provenance.", actionType: "READ", confirmationRequired: false },
+  { name: "draft_project_meeting_brief", description: "Draft a non-authoritative project meeting brief.", actionType: "DRAFT", confirmationRequired: false },
+  { name: "draft_contractor_followup", description: "Draft non-authoritative contractor follow-up wording.", actionType: "DRAFT", confirmationRequired: false },
+  { name: "propose_save_memory", description: "Propose a memory entry that requires human confirmation.", actionType: "PROPOSED_WRITE", confirmationRequired: true },
+  { name: "propose_update_observation_followup", description: "Propose an observation follow-up update that requires confirmation.", actionType: "PROPOSED_WRITE", confirmationRequired: true }
+];
+
 export class MemoryStore implements AppStore {
   private users = new Map<string, StoredUser>();
   private sessions = new Map<string, { userId: string; expiresAt: Date }>();
@@ -220,6 +258,13 @@ export class MemoryStore implements AppStore {
   private reports = new Map<string, SafetyReport>();
   private reportRevisions = new Map<string, SafetyReportRevision>();
   private reportAuditEvents: SafetyReportAuditEvent[] = [];
+  private assistantConversations = new Map<string, AssistantConversation>();
+  private assistantMessages = new Map<string, AssistantMessage>();
+  private assistantRuns = new Map<string, AssistantRun>();
+  private memoryEntries = new Map<string, MemoryEntry>();
+  private instructionDocuments = new Map<string, InstructionDocument>();
+  private skills = new Map<string, AssistantSkill>();
+  private proposedActions = new Map<string, ProposedAction>();
 
   async migrate(): Promise<void> {}
 
@@ -1803,6 +1848,449 @@ export class MemoryStore implements AppStore {
       contentType: "text/html; charset=utf-8",
       content: reportHtml(detail)
     };
+  }
+
+  async getAssistantDashboard(userId: string, projectId: string): Promise<AssistantDashboard> {
+    if (!(await this.getProject(userId, projectId))) throw new Error("Project not found");
+    return {
+      conversations: await this.listAssistantConversations(userId, projectId),
+      memoryEntries: await this.listMemoryEntries(userId, { projectId, activeOnly: true }),
+      instructions: await this.listInstructionDocuments(userId, { projectId }),
+      skills: await this.listSkills(userId, { projectId, activeOnly: true }),
+      proposedActions: await this.listProposedActions(userId, { projectId }),
+      actions: this.listAssistantActions()
+    };
+  }
+
+  listAssistantActions(): AssistantActionDescriptor[] {
+    return assistantActionDescriptors;
+  }
+
+  async listAssistantConversations(userId: string, projectId: string): Promise<AssistantConversation[]> {
+    if (!(await this.getProject(userId, projectId))) return [];
+    return [...this.assistantConversations.values()]
+      .filter((conversation) => conversation.ownerUserId === userId && conversation.projectId === projectId)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async createAssistantConversation(userId: string, input: AssistantConversationCreateInput): Promise<AssistantConversationDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    if (input.contractorId && !(await this.getContractor(userId, input.contractorId))) throw new Error("Contractor not found");
+    const timestamp = now();
+    const conversation: AssistantConversation = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      ownerUserId: userId,
+      title: input.title.trim(),
+      context: {
+        projectId: input.projectId,
+        contractorId: clean(input.contractorId),
+        retrievalScope: input.retrievalScope ?? "current_project",
+        selectedProjectIds: [],
+        activeSkillId: clean(input.activeSkillId)
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.assistantConversations.set(conversation.id, conversation);
+    return this.buildAssistantConversationDetail(conversation);
+  }
+
+  async getAssistantConversation(userId: string, conversationId: string): Promise<AssistantConversationDetail | null> {
+    const conversation = this.assistantConversations.get(conversationId);
+    if (!conversation || conversation.ownerUserId !== userId || !(await this.getProject(userId, conversation.projectId))) return null;
+    return this.buildAssistantConversationDetail(conversation);
+  }
+
+  async updateAssistantConversation(userId: string, conversationId: string, input: AssistantConversationUpdateInput): Promise<AssistantConversationDetail | null> {
+    const current = this.assistantConversations.get(conversationId);
+    if (!current || current.ownerUserId !== userId || !(await this.getProject(userId, current.projectId))) return null;
+    const selectedProjectIds = input.selectedProjectIds ?? current.context.selectedProjectIds;
+    for (const projectId of selectedProjectIds) {
+      if (!(await this.getProject(userId, projectId))) throw new Error("Selected project not found");
+    }
+    if (input.contractorId && !(await this.getContractor(userId, input.contractorId))) throw new Error("Contractor not found");
+    if (input.activeSkillId && !this.getAuthorizedSkill(userId, input.activeSkillId, current.projectId)) throw new Error("Skill not found");
+    const updated: AssistantConversation = {
+      ...current,
+      title: input.title ?? current.title,
+      context: {
+        ...current.context,
+        contractorId: input.contractorId === undefined ? current.context.contractorId : clean(input.contractorId),
+        retrievalScope: input.retrievalScope ?? current.context.retrievalScope,
+        selectedProjectIds,
+        activeSkillId: input.activeSkillId === undefined ? current.context.activeSkillId : clean(input.activeSkillId)
+      },
+      updatedAt: now()
+    };
+    this.assistantConversations.set(conversationId, updated);
+    return this.buildAssistantConversationDetail(updated);
+  }
+
+  async sendAssistantMessage(userId: string, conversationId: string, input: AssistantMessageSendInput): Promise<AssistantConversationDetail | null> {
+    const conversation = this.assistantConversations.get(conversationId);
+    if (!conversation || conversation.ownerUserId !== userId || !(await this.getProject(userId, conversation.projectId))) return null;
+    const userMessage: AssistantMessage = { id: randomUUID(), conversationId, role: "user", content: input.content.trim(), provider: null, model: null, runId: null, createdAt: now() };
+    this.assistantMessages.set(userMessage.id, userMessage);
+    const run = await this.createAssistantRun(userId, conversation, input.content);
+    const answer = this.composeAssistantAnswer(input.content, run);
+    const assistantMessage: AssistantMessage = { id: randomUUID(), conversationId, role: "assistant", content: answer, provider: run.provider, model: run.model, runId: run.id, createdAt: now() };
+    this.assistantMessages.set(assistantMessage.id, assistantMessage);
+    this.assistantConversations.set(conversationId, { ...conversation, updatedAt: now() });
+    return this.getAssistantConversation(userId, conversationId);
+  }
+
+  async listMemoryEntries(userId: string, filters: { projectId?: string; scope?: string; activeOnly?: boolean }): Promise<MemoryEntry[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    return [...this.memoryEntries.values()]
+      .filter((entry) => entry.createdByUserId === userId)
+      .filter((entry) => !filters.scope || entry.scope === filters.scope)
+      .filter((entry) => !filters.projectId || entry.scope === "global" || entry.projectId === filters.projectId)
+      .filter((entry) => !filters.activeOnly || entry.active)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async createMemoryEntry(userId: string, input: MemoryEntryCreateInput): Promise<MemoryEntry> {
+    const projectId = clean(input.projectId);
+    if (input.scope === "project" && (!projectId || !(await this.getProject(userId, projectId)))) throw new Error("Project memory requires an authorized project");
+    const timestamp = now();
+    const entry: MemoryEntry = {
+      id: randomUUID(),
+      scope: input.scope,
+      projectId: input.scope === "project" ? projectId : null,
+      content: input.content.trim(),
+      provenanceType: clean(input.provenanceType),
+      provenanceId: clean(input.provenanceId),
+      createdByUserId: userId,
+      confirmedByUserId: userId,
+      active: true,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.memoryEntries.set(entry.id, entry);
+    return entry;
+  }
+
+  async updateMemoryEntry(userId: string, memoryId: string, input: MemoryEntryUpdateInput): Promise<MemoryEntry | null> {
+    const current = this.memoryEntries.get(memoryId);
+    if (!current || current.createdByUserId !== userId || (current.projectId && !(await this.getProject(userId, current.projectId)))) return null;
+    const updated = { ...current, content: input.content ?? current.content, active: input.active ?? current.active, updatedAt: now() };
+    this.memoryEntries.set(memoryId, updated);
+    return updated;
+  }
+
+  async listInstructionDocuments(userId: string, filters: { projectId?: string; scope?: string }): Promise<InstructionDocument[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    return [...this.instructionDocuments.values()]
+      .filter((doc) => doc.createdByUserId === userId)
+      .filter((doc) => !filters.scope || doc.scope === filters.scope)
+      .filter((doc) => !filters.projectId || doc.scope === "global" || doc.projectId === filters.projectId)
+      .sort((a, b) => a.scope.localeCompare(b.scope) || a.area.localeCompare(b.area));
+  }
+
+  async saveInstructionDocument(userId: string, input: InstructionDocumentSaveInput): Promise<InstructionDocument> {
+    const projectId = clean(input.projectId);
+    if (input.scope === "project" && (!projectId || !(await this.getProject(userId, projectId)))) throw new Error("Project instruction requires an authorized project");
+    const existing = [...this.instructionDocuments.values()].find((doc) => doc.createdByUserId === userId && doc.scope === input.scope && doc.projectId === (input.scope === "project" ? projectId : null) && doc.area === input.area.trim());
+    const timestamp = now();
+    const document: InstructionDocument = {
+      id: existing?.id ?? randomUUID(),
+      scope: input.scope,
+      projectId: input.scope === "project" ? projectId : null,
+      area: input.area.trim(),
+      title: input.title.trim(),
+      markdown: input.markdown.trim(),
+      version: (existing?.version ?? 0) + 1,
+      active: true,
+      createdByUserId: existing?.createdByUserId ?? userId,
+      updatedByUserId: userId,
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.instructionDocuments.set(document.id, document);
+    return document;
+  }
+
+  async listSkills(userId: string, filters: { projectId?: string; scope?: string; activeOnly?: boolean }): Promise<AssistantSkill[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    return [...this.skills.values()]
+      .filter((skill) => skill.createdByUserId === userId)
+      .filter((skill) => !filters.scope || skill.scope === filters.scope)
+      .filter((skill) => !filters.projectId || skill.scope === "global" || skill.projectId === filters.projectId)
+      .filter((skill) => !filters.activeOnly || skill.active)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async saveSkill(userId: string, input: SkillSaveInput): Promise<AssistantSkill> {
+    const projectId = clean(input.projectId);
+    if (input.scope === "project" && (!projectId || !(await this.getProject(userId, projectId)))) throw new Error("Project skill requires an authorized project");
+    const existing = [...this.skills.values()].find((skill) => skill.createdByUserId === userId && skill.scope === input.scope && skill.projectId === (input.scope === "project" ? projectId : null) && skill.name.toLowerCase() === input.name.trim().toLowerCase());
+    const timestamp = now();
+    const skill: AssistantSkill = {
+      id: existing?.id ?? randomUUID(),
+      scope: input.scope,
+      projectId: input.scope === "project" ? projectId : null,
+      name: input.name.trim(),
+      description: input.description.trim(),
+      triggerDescription: input.triggerDescription.trim(),
+      guidedPurpose: clean(input.guidedPurpose),
+      guidedInputs: clean(input.guidedInputs),
+      guidedOutputs: clean(input.guidedOutputs),
+      guidedRules: clean(input.guidedRules),
+      guidedAuthorityLimits: clean(input.guidedAuthorityLimits),
+      markdown: input.markdown.trim(),
+      version: (existing?.version ?? 0) + 1,
+      active: input.active ?? true,
+      createdByUserId: existing?.createdByUserId ?? userId,
+      updatedByUserId: userId,
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.skills.set(skill.id, skill);
+    return skill;
+  }
+
+  async setActiveSkill(userId: string, conversationId: string, input: SkillActivationInput): Promise<AssistantConversationDetail | null> {
+    return this.updateAssistantConversation(userId, conversationId, { activeSkillId: input.activeSkillId ?? "" });
+  }
+
+  async invokeAssistantAction(userId: string, input: AssistantActionInvokeInput): Promise<AssistantActionResult> {
+    const descriptor = assistantActionDescriptors.find((action) => action.name === input.actionName);
+    if (!descriptor) throw new Error("Assistant action is not registered");
+    const conversation = input.conversationId ? this.assistantConversations.get(input.conversationId) ?? null : null;
+    if (input.conversationId && (!conversation || conversation.ownerUserId !== userId)) throw new Error("Conversation not found");
+    const projectId = String(input.input.projectId ?? conversation?.projectId ?? "");
+    if (!projectId || !(await this.getProject(userId, projectId))) throw new Error("Project not found");
+    const context = conversation?.context ?? { projectId, contractorId: null, retrievalScope: "current_project" as const, selectedProjectIds: [], activeSkillId: null };
+    const run = await this.createAssistantRun(userId, { id: conversation?.id ?? "", projectId, ownerUserId: userId, title: "Action", context, createdAt: now(), updatedAt: now() }, input.actionName);
+    const result = await this.executeAssistantAction(userId, descriptor, projectId, conversation?.id ?? null, input.input, run.retrievalManifest);
+    return { actionName: descriptor.name, actionType: descriptor.actionType, result: result.result, proposal: result.proposal, run };
+  }
+
+  async listProposedActions(userId: string, filters: { projectId?: string; conversationId?: string }): Promise<ProposedAction[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    return [...this.proposedActions.values()]
+      .filter((proposal) => proposal.createdByUserId === userId)
+      .filter((proposal) => !filters.conversationId || proposal.conversationId === filters.conversationId)
+      .filter((proposal) => !filters.projectId || proposal.targetId === filters.projectId || proposal.evidence.projectIds.includes(filters.projectId))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  async editProposedAction(userId: string, proposalId: string, input: ProposedActionEditInput): Promise<ProposedAction | null> {
+    const current = this.proposedActions.get(proposalId);
+    if (!current || current.createdByUserId !== userId || !["proposed", "edited"].includes(current.status)) return null;
+    const updated = { ...current, proposedChange: input.proposedChange ?? current.proposedChange, rationale: input.rationale === undefined ? current.rationale : clean(input.rationale), status: "edited" as const, updatedAt: now() };
+    this.proposedActions.set(proposalId, updated);
+    return updated;
+  }
+
+  async confirmProposedAction(userId: string, proposalId: string, input: ProposedActionConfirmInput): Promise<ProposedAction | null> {
+    const current = this.proposedActions.get(proposalId);
+    if (!current || current.createdByUserId !== userId || !["proposed", "edited"].includes(current.status)) return null;
+    let executedResult: Record<string, unknown> | null = null;
+    try {
+      if (current.actionName === "propose_save_memory") {
+        const saved = await this.createMemoryEntry(userId, current.proposedChange as unknown as MemoryEntryCreateInput);
+        executedResult = { memoryId: saved.id };
+      } else if (current.actionName === "propose_update_observation_followup") {
+        const observationId = String(current.targetId ?? "");
+        const observation = this.observations.get(observationId);
+        if (!observation || JSON.stringify(observation).length !== Number(current.currentState.snapshotLength)) throw new Error("Target changed since proposal was created");
+        const updated = await this.updateObservation(userId, observationId, current.proposedChange);
+        executedResult = { observationId: updated?.id };
+      } else {
+        throw new Error("No execution handler for proposed action");
+      }
+      const executed = { ...current, status: "executed" as const, confirmedByUserId: userId, confirmationNote: clean(input.confirmationNote), executedResult, updatedAt: now() };
+      this.proposedActions.set(proposalId, executed);
+      return executed;
+    } catch (error) {
+      const failed = { ...current, status: "failed" as const, confirmedByUserId: userId, confirmationNote: clean(input.confirmationNote), errorState: error instanceof Error ? error.message : "Proposal execution failed", updatedAt: now() };
+      this.proposedActions.set(proposalId, failed);
+      return failed;
+    }
+  }
+
+  async rejectProposedAction(userId: string, proposalId: string, input: ProposedActionRejectInput): Promise<ProposedAction | null> {
+    const current = this.proposedActions.get(proposalId);
+    if (!current || current.createdByUserId !== userId || !["proposed", "edited"].includes(current.status)) return null;
+    const rejected = { ...current, status: "rejected" as const, rejectionReason: clean(input.rejectionReason), updatedAt: now() };
+    this.proposedActions.set(proposalId, rejected);
+    return rejected;
+  }
+
+  private buildAssistantConversationDetail(conversation: AssistantConversation): AssistantConversationDetail {
+    return {
+      ...conversation,
+      messages: [...this.assistantMessages.values()].filter((message) => message.conversationId === conversation.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+      runs: [...this.assistantRuns.values()].filter((run) => run.conversationId === conversation.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    };
+  }
+
+  private async createAssistantRun(userId: string, conversation: AssistantConversation, query: string): Promise<AssistantRun> {
+    const manifest = await this.buildAssistantRetrievalManifest(userId, conversation.context, query);
+    const skill = conversation.context.activeSkillId ? this.skills.get(conversation.context.activeSkillId) ?? null : null;
+    const summary: AssistantContextSummary = {
+      scope: conversation.context.retrievalScope,
+      sources: manifest.sourceIds.length,
+      sourceChunks: manifest.sourceChunkIds.length,
+      operationalRecords: manifest.operationalRecords.length,
+      memoryEntries: manifest.memoryIds.length,
+      instructions: manifest.instructionIds,
+      activeSkill: skill?.name ?? null,
+      activeSkillVersion: skill?.version ?? null
+    };
+    const run: AssistantRun = {
+      id: randomUUID(),
+      conversationId: conversation.id || null,
+      status: "completed",
+      provider: process.env.ASSISTANT_AI_PROVIDER === "openai" ? "openai-unconfigured" : "local-assistant-orchestrator",
+      model: process.env.ASSISTANT_AI_PROVIDER === "openai" ? process.env.OPENAI_ASSISTANT_MODEL ?? null : "deterministic-context-orchestrator-v1",
+      contextSummary: summary,
+      retrievalManifest: manifest,
+      errorState: process.env.ASSISTANT_AI_PROVIDER === "fail-test" ? "Assistant provider test failure; deterministic read/draft actions remain available." : null,
+      createdAt: now(),
+      completedAt: now()
+    };
+    this.assistantRuns.set(run.id, run);
+    return run;
+  }
+
+  private composeAssistantAnswer(prompt: string, run: AssistantRun): string {
+    const records = run.retrievalManifest.operationalRecords.slice(0, 6).map((record) => `- ${record.type}: ${record.label}`).join("\n") || "- No matching operational records found in the selected scope.";
+    const providerLine = run.errorState ? `\n\nProvider note: ${run.errorState}` : "";
+    const suggested = prompt.toLowerCase().includes("meeting")
+      ? "\n\nSuggested actions:\n- Draft project meeting brief\n- Review open follow-up\n- Check pending proposed actions"
+      : "\n\nSuggested actions:\n- Retrieve sources\n- Draft project meeting brief\n- Propose memory update";
+    return [
+      "Context used",
+      `Scope: ${run.contextSummary.scope}`,
+      `Sources: ${run.contextSummary.sources}`,
+      `Operational records: ${run.contextSummary.operationalRecords}`,
+      `Project Memory: ${run.contextSummary.memoryEntries} entries`,
+      `Instructions: ${run.contextSummary.instructions.length}`,
+      `Active Skill: ${run.contextSummary.activeSkill ?? "None"}`,
+      "",
+      "Grounded summary",
+      records,
+      providerLine,
+      suggested
+    ].join("\n");
+  }
+
+  private async buildAssistantRetrievalManifest(userId: string, context: AssistantContext, query: string): Promise<AssistantRetrievalManifest> {
+    const projectIds = await this.authorizedAssistantProjectIds(userId, context);
+    const sourceChunks = await this.searchSourceChunks(userId, { q: query || "safety", projectId: context.projectId, activeOnly: context.retrievalScope !== "global_library" });
+    const operationalRecords: Array<{ type: string; id: string; label: string }> = [];
+    for (const projectId of projectIds) {
+      const observations = await this.listObservations(userId, { projectId });
+      const incidents = await this.listIncidents(userId, { projectId });
+      const reports = await this.listReports(userId, { projectId });
+      const decisions = [...this.projectSafetyDecisions.values()].filter((decision) => decision.projectId === projectId);
+      observations.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "observation", id: item.id, label: item.derivedSummary ?? item.originalText }));
+      incidents.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "incident", id: item.id, label: item.factualDescription }));
+      reports.slice(0, 4).forEach((item) => operationalRecords.push({ type: "report", id: item.id, label: item.title }));
+      decisions.slice(0, 4).forEach((item) => operationalRecords.push({ type: "project_decision", id: item.id, label: item.decisionText }));
+    }
+    const memories = await this.listMemoryEntries(userId, { projectId: context.projectId, activeOnly: true });
+    const instructions = await this.listInstructionDocuments(userId, { projectId: context.projectId });
+    const skill = context.activeSkillId ? this.getAuthorizedSkill(userId, context.activeSkillId, context.projectId) : null;
+    return {
+      scope: context.retrievalScope,
+      projectIds,
+      contractorId: context.contractorId,
+      sourceIds: [...new Set(sourceChunks.map((chunk) => chunk.sourceId))],
+      sourceChunkIds: sourceChunks.map((chunk) => chunk.id),
+      operationalRecords,
+      memoryIds: memories.map((entry) => entry.id),
+      instructionIds: instructions.map((instruction) => instruction.id),
+      skillId: skill?.id ?? null,
+      skillVersion: skill?.version ?? null
+    };
+  }
+
+  private async authorizedAssistantProjectIds(userId: string, context: AssistantContext): Promise<string[]> {
+    if (context.retrievalScope === "selected_projects") {
+      const allowed: string[] = [];
+      for (const projectId of context.selectedProjectIds) {
+        if (await this.getProject(userId, projectId)) allowed.push(projectId);
+      }
+      return allowed.length ? allowed : [context.projectId];
+    }
+    if (context.retrievalScope === "entire_workspace") {
+      return (await this.listProjects(userId)).map((project) => project.id);
+    }
+    return [context.projectId];
+  }
+
+  private getAuthorizedSkill(userId: string, skillId: string, projectId: string): AssistantSkill | null {
+    const skill = this.skills.get(skillId);
+    if (!skill || skill.createdByUserId !== userId || !skill.active) return null;
+    if (skill.scope === "project" && skill.projectId !== projectId) return null;
+    return skill;
+  }
+
+  private async executeAssistantAction(
+    userId: string,
+    descriptor: AssistantActionDescriptor,
+    projectId: string,
+    conversationId: string | null,
+    input: Record<string, unknown>,
+    evidence: AssistantRetrievalManifest
+  ): Promise<{ result: unknown; proposal?: ProposedAction }> {
+    if (descriptor.name === "get_project_status") {
+      return { result: { summaries: await this.listProjectReadinessSummaries(userId, projectId), observations: await this.listObservations(userId, { projectId }), incidents: await this.listIncidents(userId, { projectId }), reports: await this.listReports(userId, { projectId }) } };
+    }
+    if (descriptor.name === "get_open_observation_followup") {
+      return { result: { observations: await this.listObservations(userId, { projectId, followUpStatus: "needed" }) } };
+    }
+    if (descriptor.name === "get_open_incident_followup") {
+      return { result: { incidents: await this.listIncidents(userId, { projectId, openOnly: true }) } };
+    }
+    if (descriptor.name === "get_reports") {
+      return { result: { reports: await this.listReports(userId, { projectId }) } };
+    }
+    if (descriptor.name === "retrieve_sources") {
+      return { result: { chunks: await this.searchSourceChunks(userId, { q: String(input.q ?? ""), projectId, activeOnly: true }) } };
+    }
+    if (descriptor.name === "draft_project_meeting_brief") {
+      const observations = await this.listObservations(userId, { projectId, followUpStatus: "needed" });
+      const incidents = await this.listIncidents(userId, { projectId, openOnly: true });
+      const reports = await this.listReports(userId, { projectId });
+      return { result: { markdown: ["# Project Meeting Brief", "", `Open observation follow-up: ${observations.length}`, `Open incidents: ${incidents.length}`, `Recent reports: ${reports.length}`, "", "This is a draft artifact and does not modify operational records."].join("\n") } };
+    }
+    if (descriptor.name === "draft_contractor_followup") {
+      return { result: { markdown: `Draft contractor follow-up:\n\nPlease review the open project safety items and provide updated evidence or status before the next coordination meeting.\n\nThis is draft wording only.` } };
+    }
+    if (descriptor.name === "propose_save_memory") {
+      const proposal = this.createProposal(userId, conversationId, descriptor.name, "memory", null, {}, { scope: input.scope ?? "project", projectId, content: String(input.content ?? ""), provenanceType: input.provenanceType ?? "assistant_proposal", provenanceId: input.provenanceId ?? "" }, String(input.rationale ?? "Assistant proposed memory for human review."), evidence);
+      return { result: { proposalId: proposal.id }, proposal };
+    }
+    if (descriptor.name === "propose_update_observation_followup") {
+      const observationId = String(input.observationId ?? "");
+      const observation = this.observations.get(observationId);
+      if (!observation || observation.projectId !== projectId || !(await this.getObservation(userId, observationId))) throw new Error("Observation not found");
+      const proposal = this.createProposal(userId, conversationId, descriptor.name, "observation", observationId, { snapshotLength: JSON.stringify(observation).length }, { followUpStatus: input.followUpStatus ?? "verified_closed", followUpNote: input.followUpNote ?? "Updated by confirmed assistant proposal." }, String(input.rationale ?? "Assistant proposed follow-up update for human review."), evidence);
+      return { result: { proposalId: proposal.id }, proposal };
+    }
+    throw new Error("Assistant action handler unavailable");
+  }
+
+  private createProposal(
+    userId: string,
+    conversationId: string | null,
+    actionName: string,
+    targetType: string,
+    targetId: string | null,
+    currentState: Record<string, unknown>,
+    proposedChange: Record<string, unknown>,
+    rationale: string,
+    evidence: AssistantRetrievalManifest
+  ): ProposedAction {
+    const timestamp = now();
+    const proposal: ProposedAction = { id: randomUUID(), conversationId, originMessageId: null, actionName, targetType, targetId, currentState, proposedChange, rationale, evidence, createdByUserId: userId, status: "proposed", confirmedByUserId: null, confirmationNote: null, rejectionReason: null, executedResult: null, errorState: null, createdAt: timestamp, updatedAt: timestamp };
+    this.proposedActions.set(proposal.id, proposal);
+    return proposal;
   }
 
   private async buildReportEvidenceContext(userId: string, report: SafetyReport): Promise<ReportEvidenceContext> {

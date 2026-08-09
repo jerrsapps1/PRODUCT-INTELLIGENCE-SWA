@@ -431,6 +431,62 @@ p {
   opacity: 0.55;
 }
 
+.assistant-console {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #d6d3c9;
+}
+
+.context-strip,
+.starter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem;
+}
+
+.context-strip span {
+  min-height: 44px;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d0d5cf;
+  border-radius: 6px;
+  background: #fffdfa;
+  overflow-wrap: anywhere;
+}
+
+.assistant-messages {
+  display: grid;
+  gap: 0.75rem;
+  max-height: 48vh;
+  overflow: auto;
+}
+
+.message {
+  padding: 0.8rem;
+  border: 1px solid #d0d5cf;
+  border-radius: 8px;
+  background: #fffdfa;
+}
+
+.message.assistant {
+  background: #f0f5f1;
+}
+
+.message pre,
+.detail pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
 .upload-zone {
   padding: 0.75rem;
   border: 1px dashed #87958f;

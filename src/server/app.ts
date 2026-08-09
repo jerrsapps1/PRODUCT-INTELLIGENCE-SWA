@@ -38,12 +38,24 @@ import {
   incidentSearchSchema,
   incidentUpdateSchema,
   projectSafetyDecisionSchema,
+  assistantActionInvokeSchema,
+  assistantConversationCreateSchema,
+  assistantConversationUpdateSchema,
+  assistantMessageSendSchema,
+  instructionDocumentSaveSchema,
+  memoryEntryCreateSchema,
+  memoryEntryUpdateSchema,
+  proposedActionConfirmSchema,
+  proposedActionEditSchema,
+  proposedActionRejectSchema,
   reportCreateSchema,
   reportFinalizeSchema,
   reportGenerateSchema,
   reportRevisionUpdateSchema,
   reportSearchSchema,
   reportUpdateSchema,
+  skillActivationSchema,
+  skillSaveSchema,
   readinessEvidenceCreateSchema,
   readinessEvidenceReviewSchema,
   readinessRequirementCreateSchema,
@@ -761,6 +773,130 @@ export async function createApp(options: AppOptions) {
         return;
       }
 
+      if (method === "GET" && parts.join("/") === "api/assistant/dashboard") {
+        const projectId = url.searchParams.get("projectId") ?? "";
+        sendJson(res, 200, { dashboard: await store.getAssistantDashboard(userId, projectId) });
+        return;
+      }
+
+      if (method === "GET" && parts.join("/") === "api/assistant/actions") {
+        sendJson(res, 200, { actions: store.listAssistantActions() });
+        return;
+      }
+
+      if (method === "GET" && parts.join("/") === "api/assistant/conversations") {
+        const projectId = url.searchParams.get("projectId") ?? "";
+        sendJson(res, 200, { conversations: await store.listAssistantConversations(userId, projectId) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/assistant/conversations") {
+        const input = await readJson(req, assistantConversationCreateSchema);
+        const conversation = await store.createAssistantConversation(userId, { ...input, retrievalScope: input.retrievalScope ?? "current_project" });
+        sendJson(res, 201, { conversation });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "assistant" && parts[2] === "conversations" && parts.length >= 4) {
+        const conversationId = parts[3];
+        if (method === "GET" && parts.length === 4) {
+          const conversation = await store.getAssistantConversation(userId, conversationId);
+          if (!conversation) sendJson(res, 404, { error: "Conversation not found" });
+          else sendJson(res, 200, { conversation });
+          return;
+        }
+        if (method === "PATCH" && parts.length === 4) {
+          const conversation = await store.updateAssistantConversation(userId, conversationId, await readJson(req, assistantConversationUpdateSchema));
+          if (!conversation) sendJson(res, 404, { error: "Conversation not found" });
+          else sendJson(res, 200, { conversation });
+          return;
+        }
+        if (method === "POST" && parts[4] === "messages" && parts.length === 5) {
+          const conversation = await store.sendAssistantMessage(userId, conversationId, await readJson(req, assistantMessageSendSchema));
+          if (!conversation) sendJson(res, 404, { error: "Conversation not found" });
+          else sendJson(res, 201, { conversation });
+          return;
+        }
+        if (method === "POST" && parts[4] === "active-skill" && parts.length === 5) {
+          const conversation = await store.setActiveSkill(userId, conversationId, await readJson(req, skillActivationSchema));
+          if (!conversation) sendJson(res, 404, { error: "Conversation not found" });
+          else sendJson(res, 200, { conversation });
+          return;
+        }
+      }
+
+      if (method === "POST" && parts.join("/") === "api/assistant/actions/invoke") {
+        const input = await readJson(req, assistantActionInvokeSchema);
+        const result = await store.invokeAssistantAction(userId, { ...input, input: input.input ?? {} });
+        sendJson(res, 200, result);
+        return;
+      }
+
+      if (method === "GET" && parts.join("/") === "api/memory") {
+        sendJson(res, 200, { memoryEntries: await store.listMemoryEntries(userId, { projectId: url.searchParams.get("projectId") ?? undefined, scope: url.searchParams.get("scope") ?? undefined, activeOnly: url.searchParams.get("activeOnly") !== "false" }) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/memory") {
+        sendJson(res, 201, { memoryEntry: await store.createMemoryEntry(userId, await readJson(req, memoryEntryCreateSchema)) });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "memory" && parts.length === 3 && method === "PATCH") {
+        const memoryEntry = await store.updateMemoryEntry(userId, parts[2], await readJson(req, memoryEntryUpdateSchema));
+        if (!memoryEntry) sendJson(res, 404, { error: "Memory entry not found" });
+        else sendJson(res, 200, { memoryEntry });
+        return;
+      }
+
+      if (method === "GET" && parts.join("/") === "api/instructions") {
+        sendJson(res, 200, { instructions: await store.listInstructionDocuments(userId, { projectId: url.searchParams.get("projectId") ?? undefined, scope: url.searchParams.get("scope") ?? undefined }) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/instructions") {
+        sendJson(res, 201, { instruction: await store.saveInstructionDocument(userId, await readJson(req, instructionDocumentSaveSchema)) });
+        return;
+      }
+
+      if (method === "GET" && parts.join("/") === "api/skills") {
+        sendJson(res, 200, { skills: await store.listSkills(userId, { projectId: url.searchParams.get("projectId") ?? undefined, scope: url.searchParams.get("scope") ?? undefined, activeOnly: url.searchParams.get("activeOnly") !== "false" }) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/skills") {
+        const input = await readJson(req, skillSaveSchema);
+        sendJson(res, 201, { skill: await store.saveSkill(userId, { ...input, active: input.active ?? true }) });
+        return;
+      }
+
+      if (method === "GET" && parts.join("/") === "api/proposed-actions") {
+        sendJson(res, 200, { proposedActions: await store.listProposedActions(userId, { projectId: url.searchParams.get("projectId") ?? undefined, conversationId: url.searchParams.get("conversationId") ?? undefined }) });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "proposed-actions" && parts.length >= 3) {
+        const proposalId = parts[2];
+        if (method === "PATCH" && parts.length === 3) {
+          const proposal = await store.editProposedAction(userId, proposalId, await readJson(req, proposedActionEditSchema));
+          if (!proposal) sendJson(res, 404, { error: "Proposal not found" });
+          else sendJson(res, 200, { proposal });
+          return;
+        }
+        if (method === "POST" && parts[3] === "confirm" && parts.length === 4) {
+          const proposal = await store.confirmProposedAction(userId, proposalId, await readJson(req, proposedActionConfirmSchema));
+          if (!proposal) sendJson(res, 404, { error: "Proposal not found" });
+          else sendJson(res, 200, { proposal });
+          return;
+        }
+        if (method === "POST" && parts[3] === "reject" && parts.length === 4) {
+          const proposal = await store.rejectProposedAction(userId, proposalId, await readJson(req, proposedActionRejectSchema));
+          if (!proposal) sendJson(res, 404, { error: "Proposal not found" });
+          else sendJson(res, 200, { proposal });
+          return;
+        }
+      }
+
       if (method === "GET" && parts.join("/") === "api/sources") {
         const filters = sourceSearchSchema.parse(Object.fromEntries(url.searchParams.entries()));
         sendJson(res, 200, { sources: await store.listSources(userId, filters) });
@@ -992,7 +1128,12 @@ export async function createApp(options: AppOptions) {
         error.message === "Incident engagement must belong to the selected project" ||
         error.message === "Incident source must belong to the selected project" ||
         error.message === "Plan extraction failed" ||
-        error.message === "At least one review source is required"
+        error.message === "At least one review source is required" ||
+        error.message === "Assistant action is not registered" ||
+        error.message === "Project memory requires an authorized project" ||
+        error.message === "Project instruction requires an authorized project" ||
+        error.message === "Project skill requires an authorized project" ||
+        error.message === "Selected project not found"
       )) {
         sendJson(res, 400, { error: error.message });
         return;

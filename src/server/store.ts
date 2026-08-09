@@ -88,6 +88,27 @@ import type {
   SafetyReport,
   SafetyReportDetail,
   SafetyReportRevision,
+  AssistantActionDescriptor,
+  AssistantActionInvokeInput,
+  AssistantActionResult,
+  AssistantConversation,
+  AssistantConversationCreateInput,
+  AssistantConversationDetail,
+  AssistantConversationUpdateInput,
+  AssistantDashboard,
+  AssistantMessageSendInput,
+  AssistantSkill,
+  InstructionDocument,
+  InstructionDocumentSaveInput,
+  MemoryEntry,
+  MemoryEntryCreateInput,
+  MemoryEntryUpdateInput,
+  ProposedAction,
+  ProposedActionConfirmInput,
+  ProposedActionEditInput,
+  ProposedActionRejectInput,
+  SkillActivationInput,
+  SkillSaveInput,
   UserSummary
 } from "../shared/contracts";
 
@@ -204,6 +225,26 @@ export interface AppStore {
   finalizeReport(userId: string, reportId: string, input: ReportFinalizeInput): Promise<SafetyReportDetail | null>;
   createReportRevision(userId: string, reportId: string): Promise<SafetyReportDetail | null>;
   exportReport(userId: string, reportId: string): Promise<ReportExport | null>;
+  getAssistantDashboard(userId: string, projectId: string): Promise<AssistantDashboard>;
+  listAssistantActions(): AssistantActionDescriptor[];
+  listAssistantConversations(userId: string, projectId: string): Promise<AssistantConversation[]>;
+  createAssistantConversation(userId: string, input: AssistantConversationCreateInput): Promise<AssistantConversationDetail>;
+  getAssistantConversation(userId: string, conversationId: string): Promise<AssistantConversationDetail | null>;
+  updateAssistantConversation(userId: string, conversationId: string, input: AssistantConversationUpdateInput): Promise<AssistantConversationDetail | null>;
+  sendAssistantMessage(userId: string, conversationId: string, input: AssistantMessageSendInput): Promise<AssistantConversationDetail | null>;
+  listMemoryEntries(userId: string, filters: { projectId?: string; scope?: string; activeOnly?: boolean }): Promise<MemoryEntry[]>;
+  createMemoryEntry(userId: string, input: MemoryEntryCreateInput): Promise<MemoryEntry>;
+  updateMemoryEntry(userId: string, memoryId: string, input: MemoryEntryUpdateInput): Promise<MemoryEntry | null>;
+  listInstructionDocuments(userId: string, filters: { projectId?: string; scope?: string }): Promise<InstructionDocument[]>;
+  saveInstructionDocument(userId: string, input: InstructionDocumentSaveInput): Promise<InstructionDocument>;
+  listSkills(userId: string, filters: { projectId?: string; scope?: string; activeOnly?: boolean }): Promise<AssistantSkill[]>;
+  saveSkill(userId: string, input: SkillSaveInput): Promise<AssistantSkill>;
+  setActiveSkill(userId: string, conversationId: string, input: SkillActivationInput): Promise<AssistantConversationDetail | null>;
+  invokeAssistantAction(userId: string, input: AssistantActionInvokeInput): Promise<AssistantActionResult>;
+  listProposedActions(userId: string, filters: { projectId?: string; conversationId?: string }): Promise<ProposedAction[]>;
+  editProposedAction(userId: string, proposalId: string, input: ProposedActionEditInput): Promise<ProposedAction | null>;
+  confirmProposedAction(userId: string, proposalId: string, input: ProposedActionConfirmInput): Promise<ProposedAction | null>;
+  rejectProposedAction(userId: string, proposalId: string, input: ProposedActionRejectInput): Promise<ProposedAction | null>;
 }
 
 export class DuplicateEngagementError extends Error {

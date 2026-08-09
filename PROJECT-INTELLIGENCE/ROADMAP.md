@@ -9,7 +9,7 @@
 | 5 - Field Operations | Observations, photos, AI categorization, contractor linkage. | Implemented and verified: touch-first observations are preserved and optionally enriched by editable AI proposals without creating incident, citation, corrective-action, scoring, or discipline records. |
 | 6 - Incident Oversight | Contractor incident intake, GC/project review, decisions, follow-up. | Implemented and verified: contractor evidence and GC oversight remain explicitly separate, with human-controlled recommendations, project decisions, follow-up, and close/reopen history. |
 | 7 - Reporting | Daily/weekly/monthly/custom reports and editable artifacts. | Implemented and verified: evidence-grounded reports are generated from manifest-backed project evidence, edited through preserved revisions, finalized by a human, archived, and exported as printable HTML. |
-| 8 - Memory and Skills | Approved memory, decision promotion, guided skill management, Markdown editing. | Long-term operational memory remains human-approved and inspectable. |
+| 8 - Memory and Skills | Approved memory, decision promotion, guided skill management, Markdown editing. | Implemented and verified: assistant conversations, bounded actions, memory, instructions, skills, proposals, and human-confirmed commits are persistent, inspectable, and scope-aware. |
 | 9 - Historical Intelligence | Closeout, historical retrieval, future-selection summaries. | Project history informs human contractor-selection judgment without black-box scores. |
 
 Every phase must satisfy the full-stack completion checklist before it closes.

@@ -21,6 +21,15 @@ import type {
   ProjectSourceLink,
   ReportFormat,
   ReportType,
+  AssistantActionDescriptor,
+  AssistantConversation,
+  AssistantConversationDetail,
+  AssistantDashboard,
+  AssistantRetrievalScope,
+  AssistantSkill,
+  InstructionDocument,
+  MemoryEntry,
+  ProposedAction,
   ReadinessRequirement,
   ReadinessStatus,
   SafetyReport,
@@ -254,6 +263,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [reports, setReports] = useState<SafetyReport[]>([]);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [activeReport, setActiveReport] = useState<SafetyReportDetail | null>(null);
+  const [assistantDashboard, setAssistantDashboard] = useState<AssistantDashboard | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversation, setActiveConversation] = useState<AssistantConversationDetail | null>(null);
   const [activeView, setActiveView] = useState<View>("workspace");
   const [status, setStatus] = useState("Loading records...");
   const [error, setError] = useState("");
@@ -381,6 +393,27 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     setActiveReport(body.report);
   }
 
+  async function reloadAssistant(projectId = selectedProjectId) {
+    if (!projectId) {
+      setAssistantDashboard(null);
+      setActiveConversationId(null);
+      setActiveConversation(null);
+      return;
+    }
+    const body = await api<{ dashboard: AssistantDashboard }>(`/api/assistant/dashboard?projectId=${projectId}`);
+    setAssistantDashboard(body.dashboard);
+    setActiveConversationId((current) => current ?? body.dashboard.conversations[0]?.id ?? null);
+  }
+
+  async function reloadActiveConversation(conversationId = activeConversationId) {
+    if (!conversationId) {
+      setActiveConversation(null);
+      return;
+    }
+    const body = await api<{ conversation: AssistantConversationDetail }>(`/api/assistant/conversations/${conversationId}`);
+    setActiveConversation(body.conversation);
+  }
+
   async function reloadActivePlan(planId = activePlanId) {
     if (!planId) {
       setActivePlan(null);
@@ -438,6 +471,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setReports([]);
       setActiveReportId(null);
       setActiveReport(null);
+      setAssistantDashboard(null);
+      setActiveConversationId(null);
+      setActiveConversation(null);
       return;
     }
     api<{ engagements: ProjectContractorEngagement[] }>(`/api/projects/${selectedProjectId}/contractors`)
@@ -460,6 +496,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     );
     reloadReports(selectedProjectId).catch((loadError) =>
       setError(loadError instanceof Error ? loadError.message : "Unable to load reports")
+    );
+    reloadAssistant(selectedProjectId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load assistant")
     );
   }, [selectedProjectId]);
 
@@ -505,6 +544,12 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setError(loadError instanceof Error ? loadError.message : "Unable to load report")
     );
   }, [activeReportId]);
+
+  useEffect(() => {
+    reloadActiveConversation(activeConversationId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load assistant conversation")
+    );
+  }, [activeConversationId]);
 
   async function logout() {
     await api<void>("/api/auth/logout", { method: "POST" });
@@ -571,6 +616,15 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             activeObservation={activeObservation}
             activeIncident={activeIncident}
             activeReport={activeReport}
+            assistantDashboard={assistantDashboard}
+            activeConversation={activeConversation}
+            onConversationChanged={async (conversationId) => {
+              await reloadAssistant(selectedProjectId);
+              if (conversationId) {
+                setActiveConversationId(conversationId);
+                await reloadActiveConversation(conversationId);
+              }
+            }}
           />
         </section>
 
@@ -684,6 +738,23 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
               if (reportId) {
                 setActiveReportId(reportId);
                 await reloadActiveReport(reportId);
+              }
+            }}
+          />
+          <AssistantWorkbench
+            project={selectedProject}
+            dashboard={assistantDashboard}
+            activeConversation={activeConversation}
+            activeConversationId={activeConversationId}
+            onOpenConversation={(id) => {
+              setActiveConversationId(id);
+              setActiveView("workspace");
+            }}
+            onChanged={async (conversationId) => {
+              await reloadAssistant(selectedProjectId);
+              if (conversationId) {
+                setActiveConversationId(conversationId);
+                await reloadActiveConversation(conversationId);
               }
             }}
           />
@@ -805,7 +876,10 @@ function WorkspacePanel({
   activePlan,
   activeObservation,
   activeIncident,
-  activeReport
+  activeReport,
+  assistantDashboard,
+  activeConversation,
+  onConversationChanged
 }: {
   project: Project | null;
   engagements: ProjectContractorEngagement[];
@@ -817,6 +891,9 @@ function WorkspacePanel({
   activeObservation: ObservationDetail | null;
   activeIncident: IncidentDetail | null;
   activeReport: SafetyReportDetail | null;
+  assistantDashboard: AssistantDashboard | null;
+  activeConversation: AssistantConversationDetail | null;
+  onConversationChanged: (conversationId?: string) => Promise<void>;
 }) {
   if (!project) {
     return <div className="empty-state"><h2>No project open</h2><p>Create or select a blank project from the left panel.</p></div>;
@@ -831,6 +908,7 @@ function WorkspacePanel({
         </div>
         <span>{project.location}</span>
       </div>
+      <AssistantConsole project={project} dashboard={assistantDashboard} activeConversation={activeConversation} onChanged={onConversationChanged} />
       <section className="foundation-grid">
         <div>
           {activeReport ? (
@@ -865,6 +943,87 @@ function WorkspacePanel({
         </div>
       </section>
     </>
+  );
+}
+
+function AssistantConsole({
+  project,
+  dashboard,
+  activeConversation,
+  onChanged
+}: {
+  project: Project;
+  dashboard: AssistantDashboard | null;
+  activeConversation: AssistantConversationDetail | null;
+  onChanged: (conversationId?: string) => Promise<void>;
+}) {
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const context = activeConversation?.context;
+
+  async function ensureConversation(): Promise<string> {
+    if (activeConversation) return activeConversation.id;
+    const created = await api<{ conversation: AssistantConversationDetail }>("/api/assistant/conversations", {
+      method: "POST",
+      body: JSON.stringify({ projectId: project.id, title: "Project assistant", retrievalScope: "current_project" })
+    });
+    await onChanged(created.conversation.id);
+    return created.conversation.id;
+  }
+
+  async function send(message = prompt) {
+    if (!message.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const conversationId = await ensureConversation();
+      await api<{ conversation: AssistantConversationDetail }>(`/api/assistant/conversations/${conversationId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ content: message })
+      });
+      setPrompt("");
+      await onChanged(conversationId);
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : "Assistant request failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const starters = ["What needs my attention?", "Summarize open follow-up.", "Prepare me for the project meeting.", "Draft this week's safety summary."];
+
+  return (
+    <section className="assistant-console" aria-labelledby="assistant-title">
+      <div className="project-heading compact-heading">
+        <div>
+          <p className="eyebrow">Assistant</p>
+          <h3 id="assistant-title">{activeConversation?.title ?? "Project assistant"}</h3>
+        </div>
+        <span>{context?.retrievalScope.replace(/_/g, " ") ?? "current project"}</span>
+      </div>
+      <div className="context-strip">
+        <span>Project: {project.name}</span>
+        <span>Contractor: {context?.contractorId ?? "None"}</span>
+        <span>Skill: {dashboard?.skills.find((skill) => skill.id === context?.activeSkillId)?.name ?? "None"}</span>
+      </div>
+      <div className="starter-grid">
+        {starters.map((starter) => <button key={starter} type="button" className="ghost" onClick={() => send(starter)}>{starter}</button>)}
+      </div>
+      <div className="assistant-messages">
+        {activeConversation?.messages.length ? activeConversation.messages.map((message) => (
+          <article key={message.id} className={`message ${message.role}`}>
+            <p className="eyebrow">{message.role}</p>
+            <pre>{message.content}</pre>
+          </article>
+        )) : <p className="empty">Start a project conversation. Responses show context used, evidence classes, active skill, and suggested bounded actions.</p>}
+      </div>
+      <form onSubmit={(event) => { event.preventDefault(); send(); }} className="assistant-composer">
+        <label htmlFor="assistant-prompt">Assistant message<textarea id="assistant-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) send(); }} /></label>
+        <button className="primary" disabled={busy || !prompt.trim()}>{busy ? "Working..." : "Send"}</button>
+      </form>
+      {error ? <p className="form-error">{error}</p> : null}
+    </section>
   );
 }
 
@@ -2385,6 +2544,156 @@ function ReportingWorkbench({
         <button className="secondary" type="button" disabled={!activeReportId} onClick={createRevision}>New revision</button>
         <button className="primary" type="button" disabled={!activeReport?.currentRevision || activeReport.status === "finalized"} onClick={finalizeReport}>Finalize</button>
         <a className={`button-link ${activeReport?.currentRevision ? "" : "disabled"}`} href={activeReport?.currentRevision ? `/api/reports/${activeReport.id}/export` : undefined} target="_blank" rel="noreferrer">Export HTML</a>
+      </div>
+    </section>
+  );
+}
+
+function AssistantWorkbench({
+  project,
+  dashboard,
+  activeConversation,
+  activeConversationId,
+  onOpenConversation,
+  onChanged
+}: {
+  project: Project | null;
+  dashboard: AssistantDashboard | null;
+  activeConversation: AssistantConversationDetail | null;
+  activeConversationId: string | null;
+  onOpenConversation: (id: string) => void;
+  onChanged: (conversationId?: string) => Promise<void>;
+}) {
+  const [title, setTitle] = useState("Project assistant");
+  const [scope, setScope] = useState<AssistantRetrievalScope>("current_project");
+  const [memoryContent, setMemoryContent] = useState("");
+  const [instructionMarkdown, setInstructionMarkdown] = useState("Use concise, evidence-grounded responses. Do not bypass confirmation.");
+  const [skillName, setSkillName] = useState("Project Meeting Brief");
+  const [skillDescription, setSkillDescription] = useState("Prepare a project meeting brief from bounded project context.");
+  const [skillTrigger, setSkillTrigger] = useState("Use when preparing for project coordination meetings.");
+  const [skillMarkdown, setSkillMarkdown] = useState("# Project Meeting Brief\n\nRead open readiness, observations, incidents, decisions, and reports. Draft a meeting brief without committing operational changes.");
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  async function run(action: () => Promise<void>, message: string) {
+    setStatus(message);
+    setError("");
+    try {
+      await action();
+    } catch (workbenchError) {
+      setError(workbenchError instanceof Error ? workbenchError.message : "Assistant operation failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  async function createConversation() {
+    if (!project) return;
+    await run(async () => {
+      const created = await api<{ conversation: AssistantConversationDetail }>("/api/assistant/conversations", { method: "POST", body: JSON.stringify({ projectId: project.id, title, retrievalScope: scope }) });
+      await onChanged(created.conversation.id);
+    }, "Creating conversation...");
+  }
+
+  async function updateScope(nextScope: AssistantRetrievalScope) {
+    if (!activeConversationId) return;
+    setScope(nextScope);
+    await run(async () => {
+      await api<{ conversation: AssistantConversationDetail }>(`/api/assistant/conversations/${activeConversationId}`, { method: "PATCH", body: JSON.stringify({ retrievalScope: nextScope }) });
+      await onChanged(activeConversationId);
+    }, "Updating scope...");
+  }
+
+  async function saveMemory(scopeValue: "global" | "project") {
+    if (!project || !memoryContent.trim()) return;
+    await run(async () => {
+      await api<{ memoryEntry: MemoryEntry }>("/api/memory", { method: "POST", body: JSON.stringify({ scope: scopeValue, projectId: scopeValue === "project" ? project.id : "", content: memoryContent, provenanceType: "manual_editor" }) });
+      setMemoryContent("");
+      await onChanged(activeConversationId ?? undefined);
+    }, "Saving memory...");
+  }
+
+  async function saveInstruction(scopeValue: "global" | "project") {
+    if (!project) return;
+    await run(async () => {
+      await api<{ instruction: InstructionDocument }>("/api/instructions", { method: "POST", body: JSON.stringify({ scope: scopeValue, projectId: scopeValue === "project" ? project.id : "", area: "general", title: scopeValue === "project" ? "Project Instructions" : "Global Instructions", markdown: instructionMarkdown }) });
+      await onChanged(activeConversationId ?? undefined);
+    }, "Saving instructions...");
+  }
+
+  async function saveSkill(scopeValue: "global" | "project") {
+    if (!project) return;
+    await run(async () => {
+      await api<{ skill: AssistantSkill }>("/api/skills", { method: "POST", body: JSON.stringify({ scope: scopeValue, projectId: scopeValue === "project" ? project.id : "", name: skillName, description: skillDescription, triggerDescription: skillTrigger, guidedPurpose: skillDescription, guidedInputs: "Project context and explicit user question.", guidedOutputs: "Draft artifact or bounded proposed action.", guidedRules: "Use registered actions only.", guidedAuthorityLimits: "No authoritative writes without confirmation.", markdown: skillMarkdown, active: true }) });
+      await onChanged(activeConversationId ?? undefined);
+    }, "Saving skill...");
+  }
+
+  async function activateSkill(skillId: string) {
+    if (!activeConversationId) return;
+    await run(async () => {
+      await api<{ conversation: AssistantConversationDetail }>(`/api/assistant/conversations/${activeConversationId}/active-skill`, { method: "POST", body: JSON.stringify({ activeSkillId: skillId }) });
+      await onChanged(activeConversationId);
+    }, "Activating skill...");
+  }
+
+  async function invoke(actionName: string) {
+    if (!project) return;
+    await run(async () => {
+      await api<unknown>("/api/assistant/actions/invoke", { method: "POST", body: JSON.stringify({ conversationId: activeConversationId ?? undefined, actionName, input: { projectId: project.id, content: memoryContent || "Remember this confirmed project preference." } }) });
+      await onChanged(activeConversationId ?? undefined);
+    }, "Running assistant action...");
+  }
+
+  async function proposal(id: string, decision: "confirm" | "reject") {
+    await run(async () => {
+      await api<{ proposal: ProposedAction }>(`/api/proposed-actions/${id}/${decision}`, { method: "POST", body: JSON.stringify(decision === "confirm" ? { confirmationNote: "Confirmed by authenticated user." } : { rejectionReason: "Rejected by user." }) });
+      await onChanged(activeConversationId ?? undefined);
+    }, `${decision === "confirm" ? "Confirming" : "Rejecting"} proposal...`);
+  }
+
+  return (
+    <section className="workbench-section">
+      <h2>Assistant workbench</h2>
+      {error ? <p className="form-error">{error}</p> : null}
+      {status ? <p className="banner muted">{status}</p> : null}
+      <div className="stack compact">
+        <h3>Conversations</h3>
+        <label htmlFor="assistant-title-input">Title<input id="assistant-title-input" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+        <label htmlFor="assistant-scope">Scope<select id="assistant-scope" value={activeConversation?.context.retrievalScope ?? scope} onChange={(event) => updateScope(event.target.value as AssistantRetrievalScope)} disabled={!activeConversationId}>{["current_project", "current_contractor", "selected_projects", "global_library", "entire_workspace"].map((item) => <option key={item} value={item}>{item.replace(/_/g, " ")}</option>)}</select></label>
+        <button className="primary" type="button" disabled={!project} onClick={createConversation}>New conversation</button>
+        {dashboard?.conversations.map((conversation: AssistantConversation) => <button key={conversation.id} className={conversation.id === activeConversationId ? "row active" : "row"} type="button" onClick={() => onOpenConversation(conversation.id)}><strong>{conversation.title}</strong><span>{conversation.context.retrievalScope.replace(/_/g, " ")}</span></button>)}
+      </div>
+      <div className="stack compact">
+        <h3>Memory</h3>
+        <label htmlFor="memory-content">Markdown memory<textarea id="memory-content" value={memoryContent} onChange={(event) => setMemoryContent(event.target.value)} /></label>
+        <button className="secondary" type="button" onClick={() => saveMemory("project")}>Save Project Memory</button>
+        <button className="ghost" type="button" onClick={() => saveMemory("global")}>Save Global Memory</button>
+        {dashboard?.memoryEntries.slice(0, 4).map((entry) => <p key={entry.id} className="empty">{entry.scope}: {entry.content}</p>)}
+      </div>
+      <div className="stack compact">
+        <h3>Instructions</h3>
+        <label htmlFor="instruction-markdown">Advanced Markdown<textarea id="instruction-markdown" value={instructionMarkdown} onChange={(event) => setInstructionMarkdown(event.target.value)} /></label>
+        <button className="secondary" type="button" onClick={() => saveInstruction("project")}>Save Project Instructions</button>
+        <button className="ghost" type="button" onClick={() => saveInstruction("global")}>Save Global Instructions</button>
+      </div>
+      <div className="stack compact">
+        <h3>Skills</h3>
+        <label htmlFor="skill-name">Name<input id="skill-name" value={skillName} onChange={(event) => setSkillName(event.target.value)} /></label>
+        <label htmlFor="skill-description">What it does<textarea id="skill-description" value={skillDescription} onChange={(event) => setSkillDescription(event.target.value)} /></label>
+        <label htmlFor="skill-trigger">When to use<textarea id="skill-trigger" value={skillTrigger} onChange={(event) => setSkillTrigger(event.target.value)} /></label>
+        <label htmlFor="skill-markdown">SKILL.md<textarea id="skill-markdown" value={skillMarkdown} onChange={(event) => setSkillMarkdown(event.target.value)} /></label>
+        <button className="secondary" type="button" onClick={() => saveSkill("project")}>Save Project Skill</button>
+        <button className="ghost" type="button" onClick={() => saveSkill("global")}>Save Global Skill</button>
+        {dashboard?.skills.map((skill) => <button key={skill.id} className="row" type="button" onClick={() => activateSkill(skill.id)}><strong>{skill.name}</strong><span>{skill.scope} v{skill.version}</span></button>)}
+      </div>
+      <div className="stack compact">
+        <h3>Actions</h3>
+        {dashboard?.actions.map((action: AssistantActionDescriptor) => <button key={action.name} className={action.confirmationRequired ? "ghost" : "secondary"} type="button" onClick={() => invoke(action.name)}>{action.name}</button>)}
+      </div>
+      <div className="stack compact">
+        <h3>Proposed actions</h3>
+        {dashboard?.proposedActions.map((item) => <article key={item.id} className="detail"><p className="eyebrow">{item.status}</p><h4>{item.actionName}</h4><pre>{JSON.stringify(item.proposedChange, null, 2)}</pre><button className="primary" type="button" disabled={!["proposed", "edited"].includes(item.status)} onClick={() => proposal(item.id, "confirm")}>Confirm</button><button className="ghost" type="button" disabled={!["proposed", "edited"].includes(item.status)} onClick={() => proposal(item.id, "reject")}>Reject</button></article>)}
       </div>
     </section>
   );

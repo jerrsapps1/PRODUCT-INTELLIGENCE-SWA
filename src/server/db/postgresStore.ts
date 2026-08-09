@@ -80,6 +80,30 @@ import type {
   IncidentUpdateInput,
   ProjectSafetyDecision,
   ProjectSafetyDecisionInput,
+  AssistantActionDescriptor,
+  AssistantActionInvokeInput,
+  AssistantActionResult,
+  AssistantContext,
+  AssistantContextSummary,
+  AssistantConversation,
+  AssistantConversationCreateInput,
+  AssistantConversationDetail,
+  AssistantConversationUpdateInput,
+  AssistantDashboard,
+  AssistantMessage,
+  AssistantMessageSendInput,
+  AssistantRetrievalManifest,
+  AssistantRun,
+  AssistantSkill,
+  InstructionDocument,
+  InstructionDocumentSaveInput,
+  MemoryEntry,
+  MemoryEntryCreateInput,
+  MemoryEntryUpdateInput,
+  ProposedAction,
+  ProposedActionConfirmInput,
+  ProposedActionEditInput,
+  ProposedActionRejectInput,
   ReportCreateInput,
   ReportExport,
   ReportEvidenceManifest,
@@ -94,6 +118,8 @@ import type {
   SafetyReportAuditEvent,
   SafetyReportDetail,
   SafetyReportRevision,
+  SkillActivationInput,
+  SkillSaveInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -695,6 +721,113 @@ CREATE TABLE IF NOT EXISTS safety_report_audit_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS assistant_conversations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  context jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS assistant_messages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id uuid NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+  role text NOT NULL CHECK (role IN ('user','assistant','system')),
+  content text NOT NULL,
+  provider text,
+  model text,
+  run_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS assistant_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id uuid REFERENCES assistant_conversations(id) ON DELETE SET NULL,
+  status text NOT NULL,
+  provider text,
+  model text,
+  context_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+  retrieval_manifest jsonb NOT NULL DEFAULT '{}'::jsonb,
+  error_state text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS memory_entries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope text NOT NULL CHECK (scope IN ('global','project')),
+  project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+  content text NOT NULL,
+  provenance_type text,
+  provenance_id text,
+  created_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  confirmed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS instruction_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope text NOT NULL CHECK (scope IN ('global','project')),
+  project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+  area text NOT NULL,
+  title text NOT NULL,
+  markdown text NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  active boolean NOT NULL DEFAULT true,
+  created_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  updated_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (created_by_user_id, scope, project_id, area)
+);
+
+CREATE TABLE IF NOT EXISTS assistant_skills (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope text NOT NULL CHECK (scope IN ('global','project')),
+  project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  description text NOT NULL,
+  trigger_description text NOT NULL,
+  guided_purpose text,
+  guided_inputs text,
+  guided_outputs text,
+  guided_rules text,
+  guided_authority_limits text,
+  markdown text NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  active boolean NOT NULL DEFAULT true,
+  created_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  updated_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS proposed_actions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id uuid REFERENCES assistant_conversations(id) ON DELETE SET NULL,
+  origin_message_id uuid REFERENCES assistant_messages(id) ON DELETE SET NULL,
+  action_name text NOT NULL,
+  target_type text NOT NULL,
+  target_id text,
+  current_state jsonb NOT NULL DEFAULT '{}'::jsonb,
+  proposed_change jsonb NOT NULL DEFAULT '{}'::jsonb,
+  rationale text,
+  evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  status text NOT NULL,
+  confirmed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  confirmation_note text,
+  rejection_reason text,
+  executed_result jsonb,
+  error_state text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_safety_plans_engagement_id ON safety_plans(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_safety_plan_revisions_plan_id ON safety_plan_revisions(plan_id);
 CREATE INDEX IF NOT EXISTS idx_plan_reviews_plan_id ON plan_reviews(plan_id);
@@ -720,6 +853,13 @@ CREATE INDEX IF NOT EXISTS idx_safety_reports_project_id ON safety_reports(proje
 CREATE INDEX IF NOT EXISTS idx_safety_reports_period ON safety_reports(period_start, period_end);
 CREATE INDEX IF NOT EXISTS idx_safety_report_revisions_report_id ON safety_report_revisions(report_id);
 CREATE INDEX IF NOT EXISTS idx_safety_report_audit_report_id ON safety_report_audit_events(report_id);
+CREATE INDEX IF NOT EXISTS idx_assistant_conversations_project_id ON assistant_conversations(project_id);
+CREATE INDEX IF NOT EXISTS idx_assistant_messages_conversation_id ON assistant_messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_assistant_runs_conversation_id ON assistant_runs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_memory_entries_project_id ON memory_entries(project_id);
+CREATE INDEX IF NOT EXISTS idx_instruction_documents_project_id ON instruction_documents(project_id);
+CREATE INDEX IF NOT EXISTS idx_assistant_skills_project_id ON assistant_skills(project_id);
+CREATE INDEX IF NOT EXISTS idx_proposed_actions_conversation_id ON proposed_actions(conversation_id);
 `;
 
 function clean(value: string | undefined): string | null {
@@ -779,6 +919,18 @@ function reportHtml(detail: SafetyReportDetail): string {
 <body><header><h1>${escapeHtml(detail.title)}</h1><p>${escapeHtml(detail.reportType)} | ${escapeHtml(detail.periodStart)} to ${escapeHtml(detail.periodEnd)} | ${escapeHtml(detail.status)}</p></header>${body}</body>
 </html>`;
 }
+
+const assistantActionDescriptors: AssistantActionDescriptor[] = [
+  { name: "get_project_status", description: "Summarize current project readiness, observations, incidents, decisions, and reports.", actionType: "READ", confirmationRequired: false },
+  { name: "get_open_observation_followup", description: "List open observation follow-up for a project.", actionType: "READ", confirmationRequired: false },
+  { name: "get_open_incident_followup", description: "List open incident follow-up for a project.", actionType: "READ", confirmationRequired: false },
+  { name: "get_reports", description: "List project safety reports.", actionType: "READ", confirmationRequired: false },
+  { name: "retrieve_sources", description: "Retrieve project/global source chunks with provenance.", actionType: "READ", confirmationRequired: false },
+  { name: "draft_project_meeting_brief", description: "Draft a non-authoritative project meeting brief.", actionType: "DRAFT", confirmationRequired: false },
+  { name: "draft_contractor_followup", description: "Draft non-authoritative contractor follow-up wording.", actionType: "DRAFT", confirmationRequired: false },
+  { name: "propose_save_memory", description: "Propose a memory entry that requires human confirmation.", actionType: "PROPOSED_WRITE", confirmationRequired: true },
+  { name: "propose_update_observation_followup", description: "Propose an observation follow-up update that requires confirmation.", actionType: "PROPOSED_WRITE", confirmationRequired: true }
+];
 
 function toIsoDate(value: Date | string | null): string | null {
   if (!value) return null;
@@ -1395,6 +1547,53 @@ function mapReportAudit(row: Record<string, unknown>): SafetyReportAuditEvent {
     actorUserId: String(row.actor_user_id),
     createdAt: new Date(row.created_at as string).toISOString()
   };
+}
+
+function normalizeAssistantContext(value: unknown, projectId: string): AssistantContext {
+  const context = (value ?? {}) as Partial<AssistantContext>;
+  return {
+    projectId,
+    contractorId: context.contractorId ?? null,
+    retrievalScope: context.retrievalScope ?? "current_project",
+    selectedProjectIds: context.selectedProjectIds ?? [],
+    activeSkillId: context.activeSkillId ?? null
+  };
+}
+
+function emptyManifest(projectId = ""): AssistantRetrievalManifest {
+  return { scope: "current_project", projectIds: projectId ? [projectId] : [], contractorId: null, sourceIds: [], sourceChunkIds: [], operationalRecords: [], memoryIds: [], instructionIds: [], skillId: null, skillVersion: null };
+}
+
+function emptyContextSummary(): AssistantContextSummary {
+  return { scope: "current_project", sources: 0, sourceChunks: 0, operationalRecords: 0, memoryEntries: 0, instructions: [], activeSkill: null, activeSkillVersion: null };
+}
+
+function mapAssistantConversation(row: Record<string, unknown>): AssistantConversation {
+  return { id: String(row.id), projectId: String(row.project_id), ownerUserId: String(row.owner_user_id), title: String(row.title), context: normalizeAssistantContext(row.context, String(row.project_id)), createdAt: new Date(row.created_at as string).toISOString(), updatedAt: new Date(row.updated_at as string).toISOString() };
+}
+
+function mapAssistantMessage(row: Record<string, unknown>): AssistantMessage {
+  return { id: String(row.id), conversationId: String(row.conversation_id), role: row.role as AssistantMessage["role"], content: String(row.content), provider: row.provider ? String(row.provider) : null, model: row.model ? String(row.model) : null, runId: row.run_id ? String(row.run_id) : null, createdAt: new Date(row.created_at as string).toISOString() };
+}
+
+function mapAssistantRun(row: Record<string, unknown>): AssistantRun {
+  return { id: String(row.id), conversationId: row.conversation_id ? String(row.conversation_id) : null, status: row.status as AssistantRun["status"], provider: row.provider ? String(row.provider) : null, model: row.model ? String(row.model) : null, contextSummary: (row.context_summary ?? emptyContextSummary()) as AssistantContextSummary, retrievalManifest: (row.retrieval_manifest ?? emptyManifest()) as AssistantRetrievalManifest, errorState: row.error_state ? String(row.error_state) : null, createdAt: new Date(row.created_at as string).toISOString(), completedAt: row.completed_at ? new Date(row.completed_at as string).toISOString() : null };
+}
+
+function mapMemoryEntry(row: Record<string, unknown>): MemoryEntry {
+  return { id: String(row.id), scope: row.scope as MemoryEntry["scope"], projectId: row.project_id ? String(row.project_id) : null, content: String(row.content), provenanceType: row.provenance_type ? String(row.provenance_type) : null, provenanceId: row.provenance_id ? String(row.provenance_id) : null, createdByUserId: String(row.created_by_user_id), confirmedByUserId: row.confirmed_by_user_id ? String(row.confirmed_by_user_id) : null, active: Boolean(row.active), createdAt: new Date(row.created_at as string).toISOString(), updatedAt: new Date(row.updated_at as string).toISOString() };
+}
+
+function mapInstructionDocument(row: Record<string, unknown>): InstructionDocument {
+  return { id: String(row.id), scope: row.scope as InstructionDocument["scope"], projectId: row.project_id ? String(row.project_id) : null, area: String(row.area), title: String(row.title), markdown: String(row.markdown), version: Number(row.version), active: Boolean(row.active), createdByUserId: String(row.created_by_user_id), updatedByUserId: String(row.updated_by_user_id), createdAt: new Date(row.created_at as string).toISOString(), updatedAt: new Date(row.updated_at as string).toISOString() };
+}
+
+function mapAssistantSkill(row: Record<string, unknown>): AssistantSkill {
+  return { id: String(row.id), scope: row.scope as AssistantSkill["scope"], projectId: row.project_id ? String(row.project_id) : null, name: String(row.name), description: String(row.description), triggerDescription: String(row.trigger_description), guidedPurpose: row.guided_purpose ? String(row.guided_purpose) : null, guidedInputs: row.guided_inputs ? String(row.guided_inputs) : null, guidedOutputs: row.guided_outputs ? String(row.guided_outputs) : null, guidedRules: row.guided_rules ? String(row.guided_rules) : null, guidedAuthorityLimits: row.guided_authority_limits ? String(row.guided_authority_limits) : null, markdown: String(row.markdown), version: Number(row.version), active: Boolean(row.active), createdByUserId: String(row.created_by_user_id), updatedByUserId: String(row.updated_by_user_id), createdAt: new Date(row.created_at as string).toISOString(), updatedAt: new Date(row.updated_at as string).toISOString() };
+}
+
+function mapProposedAction(row: Record<string, unknown>): ProposedAction {
+  return { id: String(row.id), conversationId: row.conversation_id ? String(row.conversation_id) : null, originMessageId: row.origin_message_id ? String(row.origin_message_id) : null, actionName: String(row.action_name), targetType: String(row.target_type), targetId: row.target_id ? String(row.target_id) : null, currentState: (row.current_state ?? {}) as Record<string, unknown>, proposedChange: (row.proposed_change ?? {}) as Record<string, unknown>, rationale: row.rationale ? String(row.rationale) : null, evidence: (row.evidence ?? emptyManifest()) as AssistantRetrievalManifest, createdByUserId: String(row.created_by_user_id), status: row.status as ProposedAction["status"], confirmedByUserId: row.confirmed_by_user_id ? String(row.confirmed_by_user_id) : null, confirmationNote: row.confirmation_note ? String(row.confirmation_note) : null, rejectionReason: row.rejection_reason ? String(row.rejection_reason) : null, executedResult: row.executed_result ? row.executed_result as Record<string, unknown> : null, errorState: row.error_state ? String(row.error_state) : null, createdAt: new Date(row.created_at as string).toISOString(), updatedAt: new Date(row.updated_at as string).toISOString() };
 }
 
 export class PostgresStore implements AppStore {
@@ -2899,6 +3098,173 @@ export class PostgresStore implements AppStore {
     };
   }
 
+  async getAssistantDashboard(userId: string, projectId: string): Promise<AssistantDashboard> {
+    if (!(await this.getProject(userId, projectId))) throw new Error("Project not found");
+    return { conversations: await this.listAssistantConversations(userId, projectId), memoryEntries: await this.listMemoryEntries(userId, { projectId, activeOnly: true }), instructions: await this.listInstructionDocuments(userId, { projectId }), skills: await this.listSkills(userId, { projectId, activeOnly: true }), proposedActions: await this.listProposedActions(userId, { projectId }), actions: this.listAssistantActions() };
+  }
+
+  listAssistantActions(): AssistantActionDescriptor[] {
+    return assistantActionDescriptors;
+  }
+
+  async listAssistantConversations(userId: string, projectId: string): Promise<AssistantConversation[]> {
+    if (!(await this.getProject(userId, projectId))) return [];
+    const result = await this.pool.query("SELECT * FROM assistant_conversations WHERE owner_user_id = $1 AND project_id = $2 ORDER BY updated_at DESC", [userId, projectId]);
+    return result.rows.map(mapAssistantConversation);
+  }
+
+  async createAssistantConversation(userId: string, input: AssistantConversationCreateInput): Promise<AssistantConversationDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    const context: AssistantContext = { projectId: input.projectId, contractorId: clean(input.contractorId), retrievalScope: input.retrievalScope ?? "current_project", selectedProjectIds: [], activeSkillId: clean(input.activeSkillId) };
+    const result = await this.pool.query("INSERT INTO assistant_conversations (project_id, owner_user_id, title, context) VALUES ($1, $2, $3, $4) RETURNING *", [input.projectId, userId, input.title.trim(), context]);
+    return this.buildAssistantConversationDetail(mapAssistantConversation(result.rows[0]));
+  }
+
+  async getAssistantConversation(userId: string, conversationId: string): Promise<AssistantConversationDetail | null> {
+    const result = await this.pool.query("SELECT * FROM assistant_conversations WHERE owner_user_id = $1 AND id = $2", [userId, conversationId]);
+    if (!result.rows[0]) return null;
+    const conversation = mapAssistantConversation(result.rows[0]);
+    if (!(await this.getProject(userId, conversation.projectId))) return null;
+    return this.buildAssistantConversationDetail(conversation);
+  }
+
+  async updateAssistantConversation(userId: string, conversationId: string, input: AssistantConversationUpdateInput): Promise<AssistantConversationDetail | null> {
+    const current = await this.getAssistantConversation(userId, conversationId);
+    if (!current) return null;
+    for (const projectId of input.selectedProjectIds ?? current.context.selectedProjectIds) if (!(await this.getProject(userId, projectId))) throw new Error("Selected project not found");
+    const context: AssistantContext = { ...current.context, contractorId: input.contractorId === undefined ? current.context.contractorId : clean(input.contractorId), retrievalScope: input.retrievalScope ?? current.context.retrievalScope, selectedProjectIds: input.selectedProjectIds ?? current.context.selectedProjectIds, activeSkillId: input.activeSkillId === undefined ? current.context.activeSkillId : clean(input.activeSkillId) };
+    const result = await this.pool.query("UPDATE assistant_conversations SET title = $2, context = $3, updated_at = now() WHERE id = $1 RETURNING *", [conversationId, input.title ?? current.title, context]);
+    return this.buildAssistantConversationDetail(mapAssistantConversation(result.rows[0]));
+  }
+
+  async sendAssistantMessage(userId: string, conversationId: string, input: AssistantMessageSendInput): Promise<AssistantConversationDetail | null> {
+    const conversation = await this.getAssistantConversation(userId, conversationId);
+    if (!conversation) return null;
+    await this.pool.query("INSERT INTO assistant_messages (conversation_id, role, content) VALUES ($1, 'user', $2)", [conversationId, input.content.trim()]);
+    const run = await this.createAssistantRun(userId, conversation, input.content);
+    await this.pool.query("INSERT INTO assistant_messages (conversation_id, role, content, provider, model, run_id) VALUES ($1, 'assistant', $2, $3, $4, $5)", [conversationId, this.composeAssistantAnswer(input.content, run), run.provider, run.model, run.id]);
+    await this.pool.query("UPDATE assistant_conversations SET updated_at = now() WHERE id = $1", [conversationId]);
+    return this.getAssistantConversation(userId, conversationId);
+  }
+
+  async listMemoryEntries(userId: string, filters: { projectId?: string; scope?: string; activeOnly?: boolean }): Promise<MemoryEntry[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    const result = await this.pool.query(
+      `SELECT * FROM memory_entries WHERE created_by_user_id = $1
+       AND ($2::text IS NULL OR scope = $2)
+       AND ($3::uuid IS NULL OR scope = 'global' OR project_id = $3)
+       AND ($4::boolean = false OR active = true)
+       ORDER BY updated_at DESC`,
+      [userId, filters.scope ?? null, filters.projectId ?? null, filters.activeOnly ?? false]
+    );
+    return result.rows.map(mapMemoryEntry);
+  }
+
+  async createMemoryEntry(userId: string, input: MemoryEntryCreateInput): Promise<MemoryEntry> {
+    const projectId = clean(input.projectId);
+    if (input.scope === "project" && (!projectId || !(await this.getProject(userId, projectId)))) throw new Error("Project memory requires an authorized project");
+    const result = await this.pool.query("INSERT INTO memory_entries (scope, project_id, content, provenance_type, provenance_id, created_by_user_id, confirmed_by_user_id) VALUES ($1, $2, $3, $4, $5, $6, $6) RETURNING *", [input.scope, input.scope === "project" ? projectId : null, input.content.trim(), clean(input.provenanceType), clean(input.provenanceId), userId]);
+    return mapMemoryEntry(result.rows[0]);
+  }
+
+  async updateMemoryEntry(userId: string, memoryId: string, input: MemoryEntryUpdateInput): Promise<MemoryEntry | null> {
+    const result = await this.pool.query("UPDATE memory_entries SET content = COALESCE($3, content), active = COALESCE($4, active), updated_at = now() WHERE id = $1 AND created_by_user_id = $2 RETURNING *", [memoryId, userId, input.content, input.active]);
+    return result.rows[0] ? mapMemoryEntry(result.rows[0]) : null;
+  }
+
+  async listInstructionDocuments(userId: string, filters: { projectId?: string; scope?: string }): Promise<InstructionDocument[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    const result = await this.pool.query("SELECT * FROM instruction_documents WHERE created_by_user_id = $1 AND ($2::text IS NULL OR scope = $2) AND ($3::uuid IS NULL OR scope = 'global' OR project_id = $3) ORDER BY scope, area", [userId, filters.scope ?? null, filters.projectId ?? null]);
+    return result.rows.map(mapInstructionDocument);
+  }
+
+  async saveInstructionDocument(userId: string, input: InstructionDocumentSaveInput): Promise<InstructionDocument> {
+    const projectId = clean(input.projectId);
+    if (input.scope === "project" && (!projectId || !(await this.getProject(userId, projectId)))) throw new Error("Project instruction requires an authorized project");
+    const result = await this.pool.query(
+      `INSERT INTO instruction_documents (scope, project_id, area, title, markdown, created_by_user_id, updated_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $6)
+       ON CONFLICT (created_by_user_id, scope, project_id, area) DO UPDATE SET title = EXCLUDED.title, markdown = EXCLUDED.markdown, version = instruction_documents.version + 1, updated_by_user_id = EXCLUDED.updated_by_user_id, updated_at = now()
+       RETURNING *`,
+      [input.scope, input.scope === "project" ? projectId : null, input.area.trim(), input.title.trim(), input.markdown.trim(), userId]
+    );
+    return mapInstructionDocument(result.rows[0]);
+  }
+
+  async listSkills(userId: string, filters: { projectId?: string; scope?: string; activeOnly?: boolean }): Promise<AssistantSkill[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    const result = await this.pool.query("SELECT * FROM assistant_skills WHERE created_by_user_id = $1 AND ($2::text IS NULL OR scope = $2) AND ($3::uuid IS NULL OR scope = 'global' OR project_id = $3) AND ($4::boolean = false OR active = true) ORDER BY name", [userId, filters.scope ?? null, filters.projectId ?? null, filters.activeOnly ?? false]);
+    return result.rows.map(mapAssistantSkill);
+  }
+
+  async saveSkill(userId: string, input: SkillSaveInput): Promise<AssistantSkill> {
+    const projectId = clean(input.projectId);
+    if (input.scope === "project" && (!projectId || !(await this.getProject(userId, projectId)))) throw new Error("Project skill requires an authorized project");
+    const existing = await this.pool.query("SELECT * FROM assistant_skills WHERE created_by_user_id = $1 AND scope = $2 AND COALESCE(project_id::text, '') = COALESCE($3::text, '') AND lower(name) = lower($4) LIMIT 1", [userId, input.scope, input.scope === "project" ? projectId : null, input.name.trim()]);
+    if (existing.rows[0]) {
+      const result = await this.pool.query(`UPDATE assistant_skills SET description=$2, trigger_description=$3, guided_purpose=$4, guided_inputs=$5, guided_outputs=$6, guided_rules=$7, guided_authority_limits=$8, markdown=$9, active=$10, version=version+1, updated_by_user_id=$11, updated_at=now() WHERE id=$1 RETURNING *`, [existing.rows[0].id, input.description.trim(), input.triggerDescription.trim(), clean(input.guidedPurpose), clean(input.guidedInputs), clean(input.guidedOutputs), clean(input.guidedRules), clean(input.guidedAuthorityLimits), input.markdown.trim(), input.active ?? true, userId]);
+      return mapAssistantSkill(result.rows[0]);
+    }
+    const result = await this.pool.query(`INSERT INTO assistant_skills (scope, project_id, name, description, trigger_description, guided_purpose, guided_inputs, guided_outputs, guided_rules, guided_authority_limits, markdown, active, created_by_user_id, updated_by_user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13) RETURNING *`, [input.scope, input.scope === "project" ? projectId : null, input.name.trim(), input.description.trim(), input.triggerDescription.trim(), clean(input.guidedPurpose), clean(input.guidedInputs), clean(input.guidedOutputs), clean(input.guidedRules), clean(input.guidedAuthorityLimits), input.markdown.trim(), input.active ?? true, userId]);
+    return mapAssistantSkill(result.rows[0]);
+  }
+
+  async setActiveSkill(userId: string, conversationId: string, input: SkillActivationInput): Promise<AssistantConversationDetail | null> {
+    return this.updateAssistantConversation(userId, conversationId, { activeSkillId: input.activeSkillId ?? "" });
+  }
+
+  async invokeAssistantAction(userId: string, input: AssistantActionInvokeInput): Promise<AssistantActionResult> {
+    const descriptor = assistantActionDescriptors.find((action) => action.name === input.actionName);
+    if (!descriptor) throw new Error("Assistant action is not registered");
+    const conversation = input.conversationId ? await this.getAssistantConversation(userId, input.conversationId) : null;
+    if (input.conversationId && !conversation) throw new Error("Conversation not found");
+    const projectId = String(input.input.projectId ?? conversation?.projectId ?? "");
+    if (!projectId || !(await this.getProject(userId, projectId))) throw new Error("Project not found");
+    const context = conversation?.context ?? { projectId, contractorId: null, retrievalScope: "current_project" as const, selectedProjectIds: [], activeSkillId: null };
+    const run = await this.createAssistantRun(userId, { id: conversation?.id ?? "", projectId, ownerUserId: userId, title: "Action", context, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, input.actionName);
+    const result = await this.executeAssistantAction(userId, descriptor, projectId, conversation?.id ?? null, input.input, run.retrievalManifest);
+    return { actionName: descriptor.name, actionType: descriptor.actionType, result: result.result, proposal: result.proposal, run };
+  }
+
+  async listProposedActions(userId: string, filters: { projectId?: string; conversationId?: string }): Promise<ProposedAction[]> {
+    if (filters.projectId && !(await this.getProject(userId, filters.projectId))) return [];
+    const result = await this.pool.query("SELECT * FROM proposed_actions WHERE created_by_user_id = $1 AND ($2::uuid IS NULL OR conversation_id = $2) ORDER BY updated_at DESC", [userId, filters.conversationId ?? null]);
+    return result.rows.map(mapProposedAction).filter((proposal) => !filters.projectId || proposal.evidence.projectIds.includes(filters.projectId));
+  }
+
+  async editProposedAction(userId: string, proposalId: string, input: ProposedActionEditInput): Promise<ProposedAction | null> {
+    const result = await this.pool.query("UPDATE proposed_actions SET proposed_change = COALESCE($3, proposed_change), rationale = COALESCE($4, rationale), status = 'edited', updated_at = now() WHERE id = $1 AND created_by_user_id = $2 AND status IN ('proposed','edited') RETURNING *", [proposalId, userId, input.proposedChange, clean(input.rationale)]);
+    return result.rows[0] ? mapProposedAction(result.rows[0]) : null;
+  }
+
+  async confirmProposedAction(userId: string, proposalId: string, input: ProposedActionConfirmInput): Promise<ProposedAction | null> {
+    const current = (await this.pool.query("SELECT * FROM proposed_actions WHERE id = $1 AND created_by_user_id = $2", [proposalId, userId])).rows[0];
+    if (!current || !["proposed", "edited"].includes(String(current.status))) return null;
+    const proposal = mapProposedAction(current);
+    try {
+      let executedResult: Record<string, unknown>;
+      if (proposal.actionName === "propose_save_memory") {
+        const saved = await this.createMemoryEntry(userId, proposal.proposedChange as unknown as MemoryEntryCreateInput);
+        executedResult = { memoryId: saved.id };
+      } else if (proposal.actionName === "propose_update_observation_followup") {
+        const updated = await this.updateObservation(userId, String(proposal.targetId), proposal.proposedChange);
+        executedResult = { observationId: updated?.id };
+      } else {
+        throw new Error("No execution handler for proposed action");
+      }
+      const result = await this.pool.query("UPDATE proposed_actions SET status = 'executed', confirmed_by_user_id = $3, confirmation_note = $4, executed_result = $5, updated_at = now() WHERE id = $1 AND created_by_user_id = $2 RETURNING *", [proposalId, userId, userId, clean(input.confirmationNote), executedResult]);
+      return mapProposedAction(result.rows[0]);
+    } catch (error) {
+      const result = await this.pool.query("UPDATE proposed_actions SET status = 'failed', confirmed_by_user_id = $3, confirmation_note = $4, error_state = $5, updated_at = now() WHERE id = $1 AND created_by_user_id = $2 RETURNING *", [proposalId, userId, userId, clean(input.confirmationNote), error instanceof Error ? error.message : "Proposal execution failed"]);
+      return mapProposedAction(result.rows[0]);
+    }
+  }
+
+  async rejectProposedAction(userId: string, proposalId: string, input: ProposedActionRejectInput): Promise<ProposedAction | null> {
+    const result = await this.pool.query("UPDATE proposed_actions SET status = 'rejected', rejection_reason = $3, updated_at = now() WHERE id = $1 AND created_by_user_id = $2 AND status IN ('proposed','edited') RETURNING *", [proposalId, userId, clean(input.rejectionReason)]);
+    return result.rows[0] ? mapProposedAction(result.rows[0]) : null;
+  }
+
   private async buildReportDetail(report: SafetyReport): Promise<SafetyReportDetail> {
     const revisions = await this.pool.query("SELECT * FROM safety_report_revisions WHERE report_id = $1 ORDER BY revision_number DESC", [report.id]);
     const audit = await this.pool.query("SELECT * FROM safety_report_audit_events WHERE report_id = $1 ORDER BY created_at ASC", [report.id]);
@@ -2989,6 +3355,96 @@ export class PostgresStore implements AppStore {
       "INSERT INTO safety_report_audit_events (report_id, revision_id, event_type, message, actor_user_id) VALUES ($1, $2, $3, $4, $5)",
       [reportId, revisionId, eventType, message, userId]
     );
+  }
+
+  private async buildAssistantConversationDetail(conversation: AssistantConversation): Promise<AssistantConversationDetail> {
+    const messages = await this.pool.query("SELECT * FROM assistant_messages WHERE conversation_id = $1 ORDER BY created_at ASC", [conversation.id]);
+    const runs = await this.pool.query("SELECT * FROM assistant_runs WHERE conversation_id = $1 ORDER BY created_at ASC", [conversation.id]);
+    return { ...conversation, messages: messages.rows.map(mapAssistantMessage), runs: runs.rows.map(mapAssistantRun) };
+  }
+
+  private async createAssistantRun(userId: string, conversation: AssistantConversation, query: string): Promise<AssistantRun> {
+    const manifest = await this.buildAssistantRetrievalManifest(userId, conversation.context, query);
+    const skill = conversation.context.activeSkillId ? (await this.getSkillForContext(userId, conversation.context.activeSkillId, conversation.projectId)) : null;
+    const summary: AssistantContextSummary = { scope: conversation.context.retrievalScope, sources: manifest.sourceIds.length, sourceChunks: manifest.sourceChunkIds.length, operationalRecords: manifest.operationalRecords.length, memoryEntries: manifest.memoryIds.length, instructions: manifest.instructionIds, activeSkill: skill?.name ?? null, activeSkillVersion: skill?.version ?? null };
+    const result = await this.pool.query(
+      "INSERT INTO assistant_runs (conversation_id, status, provider, model, context_summary, retrieval_manifest, error_state, completed_at) VALUES ($1, 'completed', $2, $3, $4, $5, $6, now()) RETURNING *",
+      [conversation.id || null, process.env.ASSISTANT_AI_PROVIDER === "openai" ? "openai-unconfigured" : "local-assistant-orchestrator", process.env.ASSISTANT_AI_PROVIDER === "openai" ? process.env.OPENAI_ASSISTANT_MODEL ?? null : "deterministic-context-orchestrator-v1", summary, manifest, process.env.ASSISTANT_AI_PROVIDER === "fail-test" ? "Assistant provider test failure; deterministic read/draft actions remain available." : null]
+    );
+    return mapAssistantRun(result.rows[0]);
+  }
+
+  private composeAssistantAnswer(prompt: string, run: AssistantRun): string {
+    const records = run.retrievalManifest.operationalRecords.slice(0, 6).map((record) => `- ${record.type}: ${record.label}`).join("\n") || "- No matching operational records found in the selected scope.";
+    const providerLine = run.errorState ? `\n\nProvider note: ${run.errorState}` : "";
+    const suggested = prompt.toLowerCase().includes("meeting") ? "\n\nSuggested actions:\n- Draft project meeting brief\n- Review open follow-up\n- Check pending proposed actions" : "\n\nSuggested actions:\n- Retrieve sources\n- Draft project meeting brief\n- Propose memory update";
+    return ["Context used", `Scope: ${run.contextSummary.scope}`, `Sources: ${run.contextSummary.sources}`, `Operational records: ${run.contextSummary.operationalRecords}`, `Project Memory: ${run.contextSummary.memoryEntries} entries`, `Instructions: ${run.contextSummary.instructions.length}`, `Active Skill: ${run.contextSummary.activeSkill ?? "None"}`, "", "Grounded summary", records, providerLine, suggested].join("\n");
+  }
+
+  private async buildAssistantRetrievalManifest(userId: string, context: AssistantContext, query: string): Promise<AssistantRetrievalManifest> {
+    const projectIds = await this.authorizedAssistantProjectIds(userId, context);
+    const chunks = await this.searchSourceChunks(userId, { q: query || "safety", projectId: context.projectId, activeOnly: context.retrievalScope !== "global_library" });
+    const operationalRecords: Array<{ type: string; id: string; label: string }> = [];
+    for (const projectId of projectIds) {
+      const observations = await this.listObservations(userId, { projectId });
+      const incidents = await this.listIncidents(userId, { projectId });
+      const reports = await this.listReports(userId, { projectId });
+      observations.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "observation", id: item.id, label: item.derivedSummary ?? item.originalText }));
+      incidents.filter((item) => !context.contractorId || item.contractorId === context.contractorId).slice(0, 8).forEach((item) => operationalRecords.push({ type: "incident", id: item.id, label: item.factualDescription }));
+      reports.slice(0, 4).forEach((item) => operationalRecords.push({ type: "report", id: item.id, label: item.title }));
+    }
+    const memories = await this.listMemoryEntries(userId, { projectId: context.projectId, activeOnly: true });
+    const instructions = await this.listInstructionDocuments(userId, { projectId: context.projectId });
+    const skill = context.activeSkillId ? await this.getSkillForContext(userId, context.activeSkillId, context.projectId) : null;
+    return { scope: context.retrievalScope, projectIds, contractorId: context.contractorId, sourceIds: [...new Set(chunks.map((chunk) => chunk.sourceId))], sourceChunkIds: chunks.map((chunk) => chunk.id), operationalRecords, memoryIds: memories.map((entry) => entry.id), instructionIds: instructions.map((doc) => doc.id), skillId: skill?.id ?? null, skillVersion: skill?.version ?? null };
+  }
+
+  private async authorizedAssistantProjectIds(userId: string, context: AssistantContext): Promise<string[]> {
+    if (context.retrievalScope === "selected_projects") {
+      const allowed: string[] = [];
+      for (const projectId of context.selectedProjectIds) if (await this.getProject(userId, projectId)) allowed.push(projectId);
+      return allowed.length ? allowed : [context.projectId];
+    }
+    if (context.retrievalScope === "entire_workspace") return (await this.listProjects(userId)).map((project) => project.id);
+    return [context.projectId];
+  }
+
+  private async getSkillForContext(userId: string, skillId: string, projectId: string): Promise<AssistantSkill | null> {
+    const result = await this.pool.query("SELECT * FROM assistant_skills WHERE id = $1 AND created_by_user_id = $2 AND active = true", [skillId, userId]);
+    if (!result.rows[0]) return null;
+    const skill = mapAssistantSkill(result.rows[0]);
+    return skill.scope === "project" && skill.projectId !== projectId ? null : skill;
+  }
+
+  private async executeAssistantAction(userId: string, descriptor: AssistantActionDescriptor, projectId: string, conversationId: string | null, input: Record<string, unknown>, evidence: AssistantRetrievalManifest): Promise<{ result: unknown; proposal?: ProposedAction }> {
+    if (descriptor.name === "get_project_status") return { result: { summaries: await this.listProjectReadinessSummaries(userId, projectId), observations: await this.listObservations(userId, { projectId }), incidents: await this.listIncidents(userId, { projectId }), reports: await this.listReports(userId, { projectId }) } };
+    if (descriptor.name === "get_open_observation_followup") return { result: { observations: await this.listObservations(userId, { projectId, followUpStatus: "needed" }) } };
+    if (descriptor.name === "get_open_incident_followup") return { result: { incidents: await this.listIncidents(userId, { projectId, openOnly: true }) } };
+    if (descriptor.name === "get_reports") return { result: { reports: await this.listReports(userId, { projectId }) } };
+    if (descriptor.name === "retrieve_sources") return { result: { chunks: await this.searchSourceChunks(userId, { q: String(input.q ?? ""), projectId, activeOnly: true }) } };
+    if (descriptor.name === "draft_project_meeting_brief") {
+      const observations = await this.listObservations(userId, { projectId, followUpStatus: "needed" });
+      const incidents = await this.listIncidents(userId, { projectId, openOnly: true });
+      const reports = await this.listReports(userId, { projectId });
+      return { result: { markdown: ["# Project Meeting Brief", "", `Open observation follow-up: ${observations.length}`, `Open incidents: ${incidents.length}`, `Recent reports: ${reports.length}`, "", "This is a draft artifact and does not modify operational records."].join("\n") } };
+    }
+    if (descriptor.name === "draft_contractor_followup") return { result: { markdown: "Draft contractor follow-up:\n\nPlease review the open project safety items and provide updated evidence or status before the next coordination meeting.\n\nThis is draft wording only." } };
+    if (descriptor.name === "propose_save_memory") {
+      const proposal = await this.createProposal(userId, conversationId, descriptor.name, "memory", null, {}, { scope: input.scope ?? "project", projectId, content: String(input.content ?? ""), provenanceType: input.provenanceType ?? "assistant_proposal", provenanceId: input.provenanceId ?? "" }, String(input.rationale ?? "Assistant proposed memory for human review."), evidence);
+      return { result: { proposalId: proposal.id }, proposal };
+    }
+    if (descriptor.name === "propose_update_observation_followup") {
+      const observation = await this.getObservation(userId, String(input.observationId ?? ""));
+      if (!observation || observation.projectId !== projectId) throw new Error("Observation not found");
+      const proposal = await this.createProposal(userId, conversationId, descriptor.name, "observation", observation.id, { snapshotLength: JSON.stringify(observation).length }, { followUpStatus: input.followUpStatus ?? "verified_closed", followUpNote: input.followUpNote ?? "Updated by confirmed assistant proposal." }, String(input.rationale ?? "Assistant proposed follow-up update for human review."), evidence);
+      return { result: { proposalId: proposal.id }, proposal };
+    }
+    throw new Error("Assistant action handler unavailable");
+  }
+
+  private async createProposal(userId: string, conversationId: string | null, actionName: string, targetType: string, targetId: string | null, currentState: Record<string, unknown>, proposedChange: Record<string, unknown>, rationale: string, evidence: AssistantRetrievalManifest): Promise<ProposedAction> {
+    const result = await this.pool.query("INSERT INTO proposed_actions (conversation_id, action_name, target_type, target_id, current_state, proposed_change, rationale, evidence, created_by_user_id, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'proposed') RETURNING *", [conversationId, actionName, targetType, targetId, currentState, proposedChange, rationale, evidence, userId]);
+    return mapProposedAction(result.rows[0]);
   }
 
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
