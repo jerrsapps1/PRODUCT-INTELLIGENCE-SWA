@@ -45,6 +45,26 @@ export const resubmissionResolutionStatuses = ["addressed", "partially_addressed
 export const observationClassifications = ["positive", "neutral", "concern", "corrected_in_field", "follow_up_required"] as const;
 export const observationFollowUpStatuses = ["none", "needed", "verified_closed"] as const;
 export const observationSuggestionStatuses = ["saved", "processing", "ready", "failed"] as const;
+export const incidentCategories = [
+  "injury_illness",
+  "first_aid",
+  "recordable_reported_by_contractor",
+  "near_miss",
+  "property_damage",
+  "vehicle",
+  "environmental",
+  "equipment_damage",
+  "other"
+] as const;
+export const contractorInvestigationStatuses = ["not_started", "in_progress", "complete", "unknown"] as const;
+export const incidentOversightStatuses = ["received", "under_project_review", "awaiting_contractor_information", "follow_up_required", "verification_pending", "closed"] as const;
+export const affectedWorkDispositions = ["no_restriction", "additional_monitoring", "affected_activity_paused", "documentation_required", "plan_revision_required", "management_review", "cleared_to_resume"] as const;
+export const incidentAttachmentRoles = ["contractor_report", "photo", "witness_statement", "supporting_file", "investigation_attachment", "corrective_action_documentation", "revised_contractor_documentation"] as const;
+export const contractorCorrectiveActionStatuses = ["provided", "in_progress", "completed", "rejected_by_reviewer", "needs_clarification"] as const;
+export const incidentRecommendationTypes = ["accept_contractor_actions", "request_clarification", "request_additional_corrective_action", "request_workforce_communication", "require_plan_revision", "require_supporting_documentation", "perform_field_verification", "pause_affected_activity", "escalate_to_management", "no_additional_project_action"] as const;
+export const projectDecisionStatuses = ["draft", "active", "superseded", "closed"] as const;
+export const incidentFollowUpStatuses = ["needed", "verified", "not_applicable"] as const;
+export const incidentAiStatuses = ["not_run", "processing", "ready", "failed"] as const;
 
 export const projectCreateSchema = z.object({
   name: z.string().trim().min(1, "Project name is required").max(160),
@@ -315,6 +335,116 @@ export const observationReferenceLinkSchema = z.object({
   accepted: z.boolean().default(true)
 });
 
+export const incidentSearchSchema = z.object({
+  projectId: z.string().uuid(),
+  engagementId: z.string().uuid().optional(),
+  category: z.enum(incidentCategories).optional(),
+  oversightStatus: z.enum(incidentOversightStatuses).optional(),
+  followUpRequired: z.coerce.boolean().optional(),
+  openOnly: z.coerce.boolean().optional(),
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
+export const incidentCreateSchema = z.object({
+  projectId: z.string().uuid(),
+  engagementId: z.string().uuid().optional().or(z.literal("")),
+  incidentDateTime: z.string().datetime(),
+  reportedAt: z.string().datetime().optional().or(z.literal("")),
+  location: z.string().trim().max(240).optional().or(z.literal("")),
+  activity: z.string().trim().max(180).optional().or(z.literal("")),
+  factualDescription: z.string().trim().min(1).max(8000),
+  incidentCategory: z.enum(incidentCategories).default("other"),
+  contractorReportedClassification: z.string().trim().max(180).optional().or(z.literal("")),
+  contractorInvestigationStatus: z.enum(contractorInvestigationStatuses).default("unknown"),
+  affectedWorkScope: z.string().trim().max(1000).optional().or(z.literal(""))
+});
+
+export const incidentUpdateSchema = z.object({
+  incidentDateTime: z.string().datetime().optional(),
+  reportedAt: z.string().datetime().optional().or(z.literal("")),
+  location: z.string().trim().max(240).optional().or(z.literal("")),
+  activity: z.string().trim().max(180).optional().or(z.literal("")),
+  factualDescription: z.string().trim().max(8000).optional(),
+  incidentCategory: z.enum(incidentCategories).optional(),
+  contractorReportedClassification: z.string().trim().max(180).optional().or(z.literal("")),
+  contractorInvestigationStatus: z.enum(contractorInvestigationStatuses).optional(),
+  affectedWorkDisposition: z.enum(affectedWorkDispositions).optional(),
+  affectedWorkScope: z.string().trim().max(1000).optional().or(z.literal("")),
+  oversightStatus: z.enum(incidentOversightStatuses).optional()
+});
+
+export const incidentAttachmentSchema = z.object({
+  sourceId: z.string().uuid(),
+  role: z.enum(incidentAttachmentRoles),
+  receivedAt: z.string().datetime().optional().or(z.literal("")),
+  notes: z.string().trim().max(2000).optional().or(z.literal(""))
+});
+
+export const contractorCorrectiveActionSchema = z.object({
+  description: z.string().trim().min(1).max(4000),
+  sourceId: z.string().uuid().optional().or(z.literal("")),
+  targetDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+  contractorStatus: z.enum(contractorCorrectiveActionStatuses).default("provided"),
+  evidenceReceived: z.boolean().default(false)
+});
+
+export const contractorCorrectiveActionUpdateSchema = contractorCorrectiveActionSchema.partial();
+
+export const incidentProjectReviewSchema = z.object({
+  reviewerAnalysis: z.string().trim().max(8000).optional().or(z.literal("")),
+  remainingExposure: z.string().trim().max(4000).optional().or(z.literal("")),
+  planProcedureConcerns: z.string().trim().max(4000).optional().or(z.literal("")),
+  correctiveActionAdequacy: z.string().trim().max(4000).optional().or(z.literal("")),
+  additionalInformationNeeded: z.string().trim().max(4000).optional().or(z.literal("")),
+  managementReviewNeeded: z.boolean().default(false)
+});
+
+export const incidentRecommendationSchema = z.object({
+  recommendationType: z.enum(incidentRecommendationTypes),
+  recommendationText: z.string().trim().min(1).max(4000),
+  status: z.enum(["open", "accepted", "rejected", "completed"]).default("open")
+});
+
+export const incidentRecommendationUpdateSchema = incidentRecommendationSchema.partial();
+
+export const projectSafetyDecisionSchema = z.object({
+  decisionText: z.string().trim().min(1).max(4000),
+  appliesToScope: z.string().trim().max(1000).optional().or(z.literal("")),
+  effectiveDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+  status: z.enum(projectDecisionStatuses).default("active"),
+  rationale: z.string().trim().max(4000).optional().or(z.literal("")),
+  supportingSourceId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const incidentFollowUpSchema = z.object({
+  status: z.enum(incidentFollowUpStatuses),
+  verificationNote: z.string().trim().max(4000).optional().or(z.literal("")),
+  verifiedAt: z.string().datetime().optional().or(z.literal("")),
+  linkedSourceId: z.string().uuid().optional().or(z.literal("")),
+  linkedObservationId: z.string().uuid().optional().or(z.literal(""))
+});
+
+export const incidentLinkSchema = z.object({
+  planFindingId: z.string().uuid().optional().or(z.literal("")),
+  observationId: z.string().uuid().optional().or(z.literal("")),
+  suggested: z.boolean().default(false),
+  accepted: z.boolean().default(true),
+  note: z.string().trim().max(1000).optional().or(z.literal(""))
+}).refine((value) => Boolean(value.planFindingId) !== Boolean(value.observationId), {
+  message: "Link exactly one plan finding or observation"
+});
+
+export const incidentCloseSchema = z.object({
+  closureNote: z.string().trim().min(1).max(4000),
+  projectOutcome: z.string().trim().max(4000).optional().or(z.literal("")),
+  unresolvedContractorItems: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
+export const incidentReopenSchema = z.object({
+  reason: z.string().trim().min(1).max(4000)
+});
+
 export type FederalClassification = (typeof federalClassifications)[number];
 export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ContractorCreateInput = z.infer<typeof contractorCreateSchema>;
@@ -342,6 +472,16 @@ export type ResubmissionResolutionStatus = (typeof resubmissionResolutionStatuse
 export type ObservationClassification = (typeof observationClassifications)[number];
 export type ObservationFollowUpStatus = (typeof observationFollowUpStatuses)[number];
 export type ObservationSuggestionStatus = (typeof observationSuggestionStatuses)[number];
+export type IncidentCategory = (typeof incidentCategories)[number];
+export type ContractorInvestigationStatus = (typeof contractorInvestigationStatuses)[number];
+export type IncidentOversightStatus = (typeof incidentOversightStatuses)[number];
+export type AffectedWorkDisposition = (typeof affectedWorkDispositions)[number];
+export type IncidentAttachmentRole = (typeof incidentAttachmentRoles)[number];
+export type ContractorCorrectiveActionStatus = (typeof contractorCorrectiveActionStatuses)[number];
+export type IncidentRecommendationType = (typeof incidentRecommendationTypes)[number];
+export type ProjectDecisionStatus = (typeof projectDecisionStatuses)[number];
+export type IncidentFollowUpStatus = (typeof incidentFollowUpStatuses)[number];
+export type IncidentAiStatus = (typeof incidentAiStatuses)[number];
 export type ReadinessRequirementCreateInput = z.infer<typeof readinessRequirementCreateSchema>;
 export type ReadinessRequirementUpdateInput = z.infer<typeof readinessRequirementUpdateSchema>;
 export type ContractorRequirementApplyInput = z.infer<typeof contractorRequirementApplySchema>;
@@ -366,6 +506,20 @@ export type ObservationPhotoAttachInput = z.infer<typeof observationPhotoAttachS
 export type ObservationPhotoUpdateInput = z.infer<typeof observationPhotoUpdateSchema>;
 export type ObservationPlanFindingLinkInput = z.infer<typeof observationPlanFindingLinkSchema>;
 export type ObservationReferenceLinkInput = z.infer<typeof observationReferenceLinkSchema>;
+export type IncidentSearchInput = z.infer<typeof incidentSearchSchema>;
+export type IncidentCreateInput = z.infer<typeof incidentCreateSchema>;
+export type IncidentUpdateInput = z.infer<typeof incidentUpdateSchema>;
+export type IncidentAttachmentInput = z.infer<typeof incidentAttachmentSchema>;
+export type ContractorCorrectiveActionInput = z.infer<typeof contractorCorrectiveActionSchema>;
+export type ContractorCorrectiveActionUpdateInput = z.infer<typeof contractorCorrectiveActionUpdateSchema>;
+export type IncidentProjectReviewInput = z.infer<typeof incidentProjectReviewSchema>;
+export type IncidentRecommendationInput = z.infer<typeof incidentRecommendationSchema>;
+export type IncidentRecommendationUpdateInput = z.infer<typeof incidentRecommendationUpdateSchema>;
+export type ProjectSafetyDecisionInput = z.infer<typeof projectSafetyDecisionSchema>;
+export type IncidentFollowUpInput = z.infer<typeof incidentFollowUpSchema>;
+export type IncidentLinkInput = z.infer<typeof incidentLinkSchema>;
+export type IncidentCloseInput = z.infer<typeof incidentCloseSchema>;
+export type IncidentReopenInput = z.infer<typeof incidentReopenSchema>;
 
 export interface UserSummary {
   id: string;
@@ -764,6 +918,151 @@ export interface ObservationDetail extends FieldObservation {
   referenceLinks: ObservationReferenceLink[];
   planFindingLinks: ObservationPlanFindingLink[];
   auditEvents: ObservationAuditEvent[];
+}
+
+export interface IncidentRecord {
+  id: string;
+  projectId: string;
+  engagementId: string | null;
+  contractorId: string | null;
+  creatorUserId: string;
+  incidentDateTime: string;
+  reportedAt: string;
+  location: string | null;
+  activity: string | null;
+  factualDescription: string;
+  incidentCategory: IncidentCategory;
+  contractorReportedClassification: string | null;
+  contractorInvestigationStatus: ContractorInvestigationStatus;
+  oversightStatus: IncidentOversightStatus;
+  affectedWorkDisposition: AffectedWorkDisposition;
+  affectedWorkScope: string | null;
+  aiReviewStatus: IncidentAiStatus;
+  aiSummary: string | null;
+  aiSuggestedConcerns: string | null;
+  aiSuggestedQuestions: string | null;
+  aiErrorState: string | null;
+  closedAt: string | null;
+  closedByUserId: string | null;
+  closureNote: string | null;
+  projectOutcome: string | null;
+  unresolvedContractorItems: string | null;
+  reopenedAt: string | null;
+  reopenedByUserId: string | null;
+  reopenReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  engagement?: ProjectContractorEngagement;
+}
+
+export interface IncidentAttachment {
+  id: string;
+  incidentId: string;
+  sourceId: string;
+  role: IncidentAttachmentRole;
+  receivedAt: string;
+  notes: string | null;
+  createdAt: string;
+  source?: SourceRecord;
+}
+
+export interface ContractorCorrectiveAction {
+  id: string;
+  incidentId: string;
+  description: string;
+  sourceId: string | null;
+  targetDate: string | null;
+  contractorStatus: ContractorCorrectiveActionStatus;
+  evidenceReceived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  source?: SourceRecord;
+}
+
+export interface IncidentProjectReview {
+  id: string;
+  incidentId: string;
+  reviewerAnalysis: string | null;
+  remainingExposure: string | null;
+  planProcedureConcerns: string | null;
+  correctiveActionAdequacy: string | null;
+  additionalInformationNeeded: string | null;
+  managementReviewNeeded: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IncidentRecommendation {
+  id: string;
+  incidentId: string;
+  recommendationType: IncidentRecommendationType;
+  recommendationText: string;
+  status: "open" | "accepted" | "rejected" | "completed";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectSafetyDecision {
+  id: string;
+  incidentId: string;
+  projectId: string;
+  decisionText: string;
+  appliesToScope: string | null;
+  effectiveDate: string | null;
+  status: ProjectDecisionStatus;
+  decisionMakerUserId: string;
+  rationale: string | null;
+  supportingSourceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  source?: SourceRecord;
+}
+
+export interface IncidentFollowUp {
+  id: string;
+  incidentId: string;
+  status: IncidentFollowUpStatus;
+  verificationNote: string | null;
+  verifiedAt: string | null;
+  verifierUserId: string;
+  linkedSourceId: string | null;
+  linkedObservationId: string | null;
+  createdAt: string;
+  source?: SourceRecord;
+  observation?: FieldObservation;
+}
+
+export interface IncidentLink {
+  id: string;
+  incidentId: string;
+  planFindingId: string | null;
+  observationId: string | null;
+  suggested: boolean;
+  accepted: boolean;
+  note: string | null;
+  createdAt: string;
+  finding?: PlanFinding;
+  observation?: FieldObservation;
+}
+
+export interface IncidentAuditEvent {
+  id: string;
+  incidentId: string;
+  eventType: string;
+  message: string;
+  actorUserId: string;
+  createdAt: string;
+}
+
+export interface IncidentDetail extends IncidentRecord {
+  attachments: IncidentAttachment[];
+  contractorCorrectiveActions: ContractorCorrectiveAction[];
+  projectReview: IncidentProjectReview | null;
+  recommendations: IncidentRecommendation[];
+  projectDecisions: ProjectSafetyDecision[];
+  followUps: IncidentFollowUp[];
+  links: IncidentLink[];
+  auditEvents: IncidentAuditEvent[];
 }
 
 export interface ApiErrorBody {

@@ -55,6 +55,30 @@ import type {
   ObservationReferenceLinkInput,
   ObservationSearchInput,
   ObservationUpdateInput,
+  ContractorCorrectiveAction,
+  ContractorCorrectiveActionInput,
+  ContractorCorrectiveActionUpdateInput,
+  IncidentAttachment,
+  IncidentAttachmentInput,
+  IncidentAuditEvent,
+  IncidentCloseInput,
+  IncidentCreateInput,
+  IncidentDetail,
+  IncidentFollowUp,
+  IncidentFollowUpInput,
+  IncidentLink,
+  IncidentLinkInput,
+  IncidentProjectReview,
+  IncidentProjectReviewInput,
+  IncidentRecommendation,
+  IncidentRecommendationInput,
+  IncidentRecommendationUpdateInput,
+  IncidentRecord,
+  IncidentReopenInput,
+  IncidentSearchInput,
+  IncidentUpdateInput,
+  ProjectSafetyDecision,
+  ProjectSafetyDecisionInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -67,6 +91,8 @@ import {
   DuplicateObservationPhotoError,
   DuplicateObservationPlanFindingLinkError,
   DuplicateObservationReferenceError,
+  DuplicateIncidentAttachmentError,
+  DuplicateIncidentLinkError,
   DuplicateProjectSourceError,
   DuplicatePlanRevisionSourceError,
   DuplicateRequirementApplicationError,
@@ -75,6 +101,7 @@ import {
 } from "../store";
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
+import { runIncidentAssistant } from "../incidentAssistant";
 
 function now(): string {
   return new Date().toISOString();
@@ -111,6 +138,15 @@ export class MemoryStore implements AppStore {
   private observationReferences = new Map<string, ObservationReferenceLink>();
   private observationPlanFindingLinks = new Map<string, ObservationPlanFindingLink>();
   private observationAuditEvents: ObservationAuditEvent[] = [];
+  private incidents = new Map<string, IncidentRecord>();
+  private incidentAttachments = new Map<string, IncidentAttachment>();
+  private contractorCorrectiveActions = new Map<string, ContractorCorrectiveAction>();
+  private incidentProjectReviews = new Map<string, IncidentProjectReview>();
+  private incidentRecommendations = new Map<string, IncidentRecommendation>();
+  private projectSafetyDecisions = new Map<string, ProjectSafetyDecision>();
+  private incidentFollowUps = new Map<string, IncidentFollowUp>();
+  private incidentLinks = new Map<string, IncidentLink>();
+  private incidentAuditEvents: IncidentAuditEvent[] = [];
 
   async migrate(): Promise<void> {}
 
@@ -1161,6 +1197,367 @@ export class MemoryStore implements AppStore {
     this.addObservationAudit(userId, link.observationId, "plan_finding_link_removed", "Removed plan finding link");
   }
 
+  async listIncidents(userId: string, filters: IncidentSearchInput): Promise<IncidentRecord[]> {
+    if (!(await this.getProject(userId, filters.projectId))) return [];
+    return [...this.incidents.values()]
+      .filter((incident) => incident.projectId === filters.projectId)
+      .filter((incident) => !filters.engagementId || incident.engagementId === filters.engagementId)
+      .filter((incident) => !filters.category || incident.incidentCategory === filters.category)
+      .filter((incident) => !filters.oversightStatus || incident.oversightStatus === filters.oversightStatus)
+      .filter((incident) => !filters.openOnly || incident.oversightStatus !== "closed")
+      .filter((incident) => filters.followUpRequired === undefined || (incident.oversightStatus === "follow_up_required" || incident.oversightStatus === "verification_pending") === filters.followUpRequired)
+      .filter((incident) => !filters.dateFrom || incident.incidentDateTime.slice(0, 10) >= filters.dateFrom)
+      .filter((incident) => !filters.dateTo || incident.incidentDateTime.slice(0, 10) <= filters.dateTo)
+      .map((incident) => this.withIncidentContext(incident))
+      .sort((a, b) => b.incidentDateTime.localeCompare(a.incidentDateTime));
+  }
+
+  async createIncident(userId: string, input: IncidentCreateInput): Promise<IncidentDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    const engagement = input.engagementId ? await this.getEngagementForUser(userId, input.engagementId) : null;
+    if (input.engagementId && (!engagement || engagement.projectId !== input.projectId)) {
+      throw new Error("Incident engagement must belong to the selected project");
+    }
+    const timestamp = now();
+    const incident: IncidentRecord = {
+      id: randomUUID(),
+      projectId: input.projectId,
+      engagementId: engagement?.id ?? null,
+      contractorId: engagement?.contractorId ?? null,
+      creatorUserId: userId,
+      incidentDateTime: input.incidentDateTime,
+      reportedAt: clean(input.reportedAt) ?? timestamp,
+      location: clean(input.location),
+      activity: clean(input.activity),
+      factualDescription: input.factualDescription.trim(),
+      incidentCategory: input.incidentCategory ?? "other",
+      contractorReportedClassification: clean(input.contractorReportedClassification),
+      contractorInvestigationStatus: input.contractorInvestigationStatus ?? "unknown",
+      oversightStatus: "received",
+      affectedWorkDisposition: "no_restriction",
+      affectedWorkScope: clean(input.affectedWorkScope),
+      aiReviewStatus: "not_run",
+      aiSummary: null,
+      aiSuggestedConcerns: null,
+      aiSuggestedQuestions: null,
+      aiErrorState: null,
+      closedAt: null,
+      closedByUserId: null,
+      closureNote: null,
+      projectOutcome: null,
+      unresolvedContractorItems: null,
+      reopenedAt: null,
+      reopenedByUserId: null,
+      reopenReason: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.incidents.set(incident.id, incident);
+    this.addIncidentAudit(userId, incident.id, "incident_created", "Created incident oversight record");
+    return (await this.getIncident(userId, incident.id)) as IncidentDetail;
+  }
+
+  async getIncident(userId: string, incidentId: string): Promise<IncidentDetail | null> {
+    const incident = this.incidents.get(incidentId);
+    if (!incident || !(await this.getProject(userId, incident.projectId))) return null;
+    return this.buildIncidentDetail(incident);
+  }
+
+  async updateIncident(userId: string, incidentId: string, input: IncidentUpdateInput): Promise<IncidentDetail | null> {
+    const current = this.incidents.get(incidentId);
+    if (!current || !(await this.getProject(userId, current.projectId))) return null;
+    const updated: IncidentRecord = {
+      ...current,
+      incidentDateTime: input.incidentDateTime ?? current.incidentDateTime,
+      reportedAt: input.reportedAt === undefined ? current.reportedAt : clean(input.reportedAt) ?? current.reportedAt,
+      location: input.location === undefined ? current.location : clean(input.location),
+      activity: input.activity === undefined ? current.activity : clean(input.activity),
+      factualDescription: input.factualDescription?.trim() || current.factualDescription,
+      incidentCategory: input.incidentCategory ?? current.incidentCategory,
+      contractorReportedClassification: input.contractorReportedClassification === undefined ? current.contractorReportedClassification : clean(input.contractorReportedClassification),
+      contractorInvestigationStatus: input.contractorInvestigationStatus ?? current.contractorInvestigationStatus,
+      affectedWorkDisposition: input.affectedWorkDisposition ?? current.affectedWorkDisposition,
+      affectedWorkScope: input.affectedWorkScope === undefined ? current.affectedWorkScope : clean(input.affectedWorkScope),
+      oversightStatus: input.oversightStatus ?? current.oversightStatus,
+      updatedAt: now()
+    };
+    this.incidents.set(incidentId, updated);
+    this.addIncidentAudit(userId, incidentId, "incident_updated", "Updated incident factual or oversight fields");
+    return this.getIncident(userId, incidentId);
+  }
+
+  async attachIncidentSource(userId: string, incidentId: string, input: IncidentAttachmentInput): Promise<IncidentAttachment> {
+    const incident = await this.getIncident(userId, incidentId);
+    if (!incident) throw new Error("Incident not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    if (source.projectId && source.projectId !== incident.projectId) throw new Error("Incident source must belong to the selected project");
+    const duplicate = [...this.incidentAttachments.values()].find((item) => item.incidentId === incidentId && item.sourceId === input.sourceId && item.role === input.role);
+    if (duplicate) throw new DuplicateIncidentAttachmentError();
+    const attachment: IncidentAttachment = {
+      id: randomUUID(),
+      incidentId,
+      sourceId: source.id,
+      role: input.role,
+      receivedAt: clean(input.receivedAt) ?? now(),
+      notes: clean(input.notes),
+      createdAt: now(),
+      source
+    };
+    this.incidentAttachments.set(attachment.id, attachment);
+    this.addIncidentAudit(userId, incidentId, input.role === "contractor_report" ? "contractor_report_received" : "attachment_added", `Attached incident source: ${source.title}`);
+    return attachment;
+  }
+
+  async removeIncidentAttachment(userId: string, attachmentId: string): Promise<void> {
+    const attachment = this.incidentAttachments.get(attachmentId);
+    if (!attachment || !(await this.getIncident(userId, attachment.incidentId))) return;
+    this.incidentAttachments.delete(attachmentId);
+    this.addIncidentAudit(userId, attachment.incidentId, "attachment_removed", "Removed incident-source association; original source was preserved");
+  }
+
+  async createContractorCorrectiveAction(userId: string, incidentId: string, input: ContractorCorrectiveActionInput): Promise<ContractorCorrectiveAction> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    if (input.sourceId && !(await this.getSource(userId, input.sourceId))) throw new Error("Source not found");
+    const action: ContractorCorrectiveAction = {
+      id: randomUUID(),
+      incidentId,
+      description: input.description.trim(),
+      sourceId: clean(input.sourceId),
+      targetDate: clean(input.targetDate),
+      contractorStatus: input.contractorStatus ?? "provided",
+      evidenceReceived: input.evidenceReceived ?? false,
+      createdAt: now(),
+      updatedAt: now(),
+      source: input.sourceId ? this.sources.get(input.sourceId) : undefined
+    };
+    this.contractorCorrectiveActions.set(action.id, action);
+    this.addIncidentAudit(userId, incidentId, "contractor_corrective_action_recorded", "Recorded contractor-provided corrective action");
+    return action;
+  }
+
+  async updateContractorCorrectiveAction(userId: string, actionId: string, input: ContractorCorrectiveActionUpdateInput): Promise<ContractorCorrectiveAction | null> {
+    const current = this.contractorCorrectiveActions.get(actionId);
+    if (!current || !(await this.getIncident(userId, current.incidentId))) return null;
+    const updated = {
+      ...current,
+      description: input.description ?? current.description,
+      sourceId: input.sourceId === undefined ? current.sourceId : clean(input.sourceId),
+      targetDate: input.targetDate === undefined ? current.targetDate : clean(input.targetDate),
+      contractorStatus: input.contractorStatus ?? current.contractorStatus,
+      evidenceReceived: input.evidenceReceived ?? current.evidenceReceived,
+      updatedAt: now(),
+      source: input.sourceId ? this.sources.get(input.sourceId) : current.source
+    };
+    this.contractorCorrectiveActions.set(actionId, updated);
+    this.addIncidentAudit(userId, current.incidentId, "contractor_corrective_action_updated", "Updated contractor-provided corrective action");
+    return updated;
+  }
+
+  async upsertIncidentProjectReview(userId: string, incidentId: string, input: IncidentProjectReviewInput): Promise<IncidentProjectReview> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    const existing = [...this.incidentProjectReviews.values()].find((review) => review.incidentId === incidentId);
+    const review: IncidentProjectReview = {
+      id: existing?.id ?? randomUUID(),
+      incidentId,
+      reviewerAnalysis: clean(input.reviewerAnalysis),
+      remainingExposure: clean(input.remainingExposure),
+      planProcedureConcerns: clean(input.planProcedureConcerns),
+      correctiveActionAdequacy: clean(input.correctiveActionAdequacy),
+      additionalInformationNeeded: clean(input.additionalInformationNeeded),
+      managementReviewNeeded: input.managementReviewNeeded ?? false,
+      createdAt: existing?.createdAt ?? now(),
+      updatedAt: now()
+    };
+    this.incidentProjectReviews.set(review.id, review);
+    const incident = this.incidents.get(incidentId);
+    if (incident && incident.oversightStatus === "received") this.incidents.set(incidentId, { ...incident, oversightStatus: "under_project_review", updatedAt: now() });
+    this.addIncidentAudit(userId, incidentId, existing ? "project_review_edited" : "project_review_created", "Saved separate GC/project incident review");
+    return review;
+  }
+
+  async createIncidentRecommendation(userId: string, incidentId: string, input: IncidentRecommendationInput): Promise<IncidentRecommendation> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    const recommendation: IncidentRecommendation = {
+      id: randomUUID(),
+      incidentId,
+      recommendationType: input.recommendationType,
+      recommendationText: input.recommendationText.trim(),
+      status: input.status ?? "open",
+      createdAt: now(),
+      updatedAt: now()
+    };
+    this.incidentRecommendations.set(recommendation.id, recommendation);
+    this.addIncidentAudit(userId, incidentId, "recommendation_added", "Added human-controlled project recommendation");
+    return recommendation;
+  }
+
+  async updateIncidentRecommendation(userId: string, recommendationId: string, input: IncidentRecommendationUpdateInput): Promise<IncidentRecommendation | null> {
+    const current = this.incidentRecommendations.get(recommendationId);
+    if (!current || !(await this.getIncident(userId, current.incidentId))) return null;
+    const updated = {
+      ...current,
+      recommendationType: input.recommendationType ?? current.recommendationType,
+      recommendationText: input.recommendationText ?? current.recommendationText,
+      status: input.status ?? current.status,
+      updatedAt: now()
+    };
+    this.incidentRecommendations.set(recommendationId, updated);
+    this.addIncidentAudit(userId, current.incidentId, "recommendation_updated", "Updated project recommendation");
+    return updated;
+  }
+
+  async createProjectSafetyDecision(userId: string, incidentId: string, input: ProjectSafetyDecisionInput): Promise<ProjectSafetyDecision> {
+    const incident = await this.getIncident(userId, incidentId);
+    if (!incident) throw new Error("Incident not found");
+    if (input.supportingSourceId && !(await this.getSource(userId, input.supportingSourceId))) throw new Error("Source not found");
+    const decision: ProjectSafetyDecision = {
+      id: randomUUID(),
+      incidentId,
+      projectId: incident.projectId,
+      decisionText: input.decisionText.trim(),
+      appliesToScope: clean(input.appliesToScope),
+      effectiveDate: clean(input.effectiveDate),
+      status: input.status ?? "active",
+      decisionMakerUserId: userId,
+      rationale: clean(input.rationale),
+      supportingSourceId: clean(input.supportingSourceId),
+      createdAt: now(),
+      updatedAt: now(),
+      source: input.supportingSourceId ? this.sources.get(input.supportingSourceId) : undefined
+    };
+    this.projectSafetyDecisions.set(decision.id, decision);
+    this.addIncidentAudit(userId, incidentId, "project_decision_created", "Created human-confirmed project safety decision");
+    return decision;
+  }
+
+  async createIncidentFollowUp(userId: string, incidentId: string, input: IncidentFollowUpInput): Promise<IncidentFollowUp> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    if (input.linkedSourceId && !(await this.getSource(userId, input.linkedSourceId))) throw new Error("Source not found");
+    if (input.linkedObservationId && !(await this.getObservation(userId, input.linkedObservationId))) throw new Error("Observation not found");
+    const followUp: IncidentFollowUp = {
+      id: randomUUID(),
+      incidentId,
+      status: input.status,
+      verificationNote: clean(input.verificationNote),
+      verifiedAt: clean(input.verifiedAt) ?? now(),
+      verifierUserId: userId,
+      linkedSourceId: clean(input.linkedSourceId),
+      linkedObservationId: clean(input.linkedObservationId),
+      createdAt: now(),
+      source: input.linkedSourceId ? this.sources.get(input.linkedSourceId) : undefined,
+      observation: input.linkedObservationId ? this.observations.get(input.linkedObservationId) : undefined
+    };
+    this.incidentFollowUps.set(followUp.id, followUp);
+    const incident = this.incidents.get(incidentId);
+    if (incident && input.status === "verified") this.incidents.set(incidentId, { ...incident, oversightStatus: "verification_pending", updatedAt: now() });
+    this.addIncidentAudit(userId, incidentId, "follow_up_recorded", "Recorded project-level follow-up verification");
+    return followUp;
+  }
+
+  async linkIncidentRecord(userId: string, incidentId: string, input: IncidentLinkInput): Promise<IncidentLink> {
+    const incident = await this.getIncident(userId, incidentId);
+    if (!incident) throw new Error("Incident not found");
+    const planFindingId = clean(input.planFindingId);
+    const observationId = clean(input.observationId);
+    if (planFindingId && !(await this.getPlanFindingForObservation(userId, planFindingId, incident.projectId))) throw new Error("Plan finding not found");
+    if (observationId) {
+      const observation = await this.getObservation(userId, observationId);
+      if (!observation || observation.projectId !== incident.projectId) throw new Error("Observation not found");
+    }
+    const duplicate = [...this.incidentLinks.values()].find((link) => link.incidentId === incidentId && link.planFindingId === planFindingId && link.observationId === observationId);
+    if (duplicate) throw new DuplicateIncidentLinkError();
+    const link: IncidentLink = {
+      id: randomUUID(),
+      incidentId,
+      planFindingId,
+      observationId,
+      suggested: input.suggested ?? false,
+      accepted: input.accepted ?? true,
+      note: clean(input.note),
+      createdAt: now(),
+      finding: planFindingId ? this.planFindings.get(planFindingId) : undefined,
+      observation: observationId ? this.observations.get(observationId) : undefined
+    };
+    this.incidentLinks.set(link.id, link);
+    this.addIncidentAudit(userId, incidentId, planFindingId ? "plan_finding_link_added" : "observation_link_added", "Linked related plan finding or observation");
+    return link;
+  }
+
+  async unlinkIncidentRecord(userId: string, linkId: string): Promise<void> {
+    const link = this.incidentLinks.get(linkId);
+    if (!link || !(await this.getIncident(userId, link.incidentId))) return;
+    this.incidentLinks.delete(linkId);
+    this.addIncidentAudit(userId, link.incidentId, "incident_link_removed", "Removed incident relationship link");
+  }
+
+  async runIncidentAiReview(userId: string, incidentId: string): Promise<IncidentDetail | null> {
+    const detail = await this.getIncident(userId, incidentId);
+    if (!detail) return null;
+    this.incidents.set(incidentId, { ...detail, aiReviewStatus: "processing", aiErrorState: null, updatedAt: now() });
+    this.addIncidentAudit(userId, incidentId, "ai_review_started", "Started incident oversight suggestions");
+    const documents: SourceDetail[] = [];
+    for (const attachment of detail.attachments) {
+      const source = await this.getSource(userId, attachment.sourceId);
+      if (source) documents.push(source);
+    }
+    const findings = detail.links.map((link) => link.finding).filter(Boolean) as PlanFinding[];
+    const observations = detail.links.map((link) => link.observation).filter(Boolean) as FieldObservation[];
+    const assistant = await runIncidentAssistant({
+      factualDescription: detail.factualDescription,
+      activity: detail.activity,
+      contractorClassification: detail.contractorReportedClassification,
+      documents,
+      findings,
+      observations
+    });
+    const current = this.incidents.get(incidentId);
+    if (!current) return null;
+    this.incidents.set(incidentId, {
+      ...current,
+      aiReviewStatus: assistant.processingStatus,
+      aiSummary: assistant.processingStatus === "ready" ? assistant.summary : current.aiSummary,
+      aiSuggestedConcerns: assistant.processingStatus === "ready" ? assistant.suggestedConcerns : current.aiSuggestedConcerns,
+      aiSuggestedQuestions: assistant.processingStatus === "ready" ? assistant.suggestedQuestions : current.aiSuggestedQuestions,
+      aiErrorState: assistant.errorState,
+      updatedAt: now()
+    });
+    this.addIncidentAudit(userId, incidentId, assistant.processingStatus === "ready" ? "ai_review_ready" : "ai_review_failed", assistant.processingStatus === "ready" ? "Incident suggestions ready" : "Incident was preserved, but AI suggestions failed");
+    return this.getIncident(userId, incidentId);
+  }
+
+  async closeIncident(userId: string, incidentId: string, input: IncidentCloseInput): Promise<IncidentDetail | null> {
+    const current = this.incidents.get(incidentId);
+    if (!current || !(await this.getProject(userId, current.projectId))) return null;
+    this.incidents.set(incidentId, {
+      ...current,
+      oversightStatus: "closed",
+      closedAt: now(),
+      closedByUserId: userId,
+      closureNote: input.closureNote.trim(),
+      projectOutcome: clean(input.projectOutcome),
+      unresolvedContractorItems: clean(input.unresolvedContractorItems),
+      updatedAt: now()
+    });
+    this.addIncidentAudit(userId, incidentId, "incident_closed", "Closed project oversight record");
+    return this.getIncident(userId, incidentId);
+  }
+
+  async reopenIncident(userId: string, incidentId: string, input: IncidentReopenInput): Promise<IncidentDetail | null> {
+    const current = this.incidents.get(incidentId);
+    if (!current || !(await this.getProject(userId, current.projectId))) return null;
+    this.incidents.set(incidentId, {
+      ...current,
+      oversightStatus: "under_project_review",
+      reopenedAt: now(),
+      reopenedByUserId: userId,
+      reopenReason: input.reason.trim(),
+      updatedAt: now()
+    });
+    this.addIncidentAudit(userId, incidentId, "incident_reopened", input.reason.trim());
+    return this.getIncident(userId, incidentId);
+  }
+
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
     const engagement = this.engagements.get(engagementId);
     if (!engagement || !(await this.getProject(userId, engagement.projectId))) return null;
@@ -1206,10 +1603,52 @@ export class MemoryStore implements AppStore {
     };
   }
 
+  private buildIncidentDetail(incident: IncidentRecord): IncidentDetail {
+    return {
+      ...this.withIncidentContext(incident),
+      attachments: [...this.incidentAttachments.values()]
+        .filter((attachment) => attachment.incidentId === incident.id)
+        .map((attachment) => ({ ...attachment, source: this.sources.get(attachment.sourceId) })),
+      contractorCorrectiveActions: [...this.contractorCorrectiveActions.values()]
+        .filter((action) => action.incidentId === incident.id)
+        .map((action) => ({ ...action, source: action.sourceId ? this.sources.get(action.sourceId) : undefined })),
+      projectReview: [...this.incidentProjectReviews.values()].find((review) => review.incidentId === incident.id) ?? null,
+      recommendations: [...this.incidentRecommendations.values()].filter((recommendation) => recommendation.incidentId === incident.id),
+      projectDecisions: [...this.projectSafetyDecisions.values()]
+        .filter((decision) => decision.incidentId === incident.id)
+        .map((decision) => ({ ...decision, source: decision.supportingSourceId ? this.sources.get(decision.supportingSourceId) : undefined })),
+      followUps: [...this.incidentFollowUps.values()]
+        .filter((followUp) => followUp.incidentId === incident.id)
+        .map((followUp) => ({
+          ...followUp,
+          source: followUp.linkedSourceId ? this.sources.get(followUp.linkedSourceId) : undefined,
+          observation: followUp.linkedObservationId ? this.observations.get(followUp.linkedObservationId) : undefined
+        })),
+      links: [...this.incidentLinks.values()]
+        .filter((link) => link.incidentId === incident.id)
+        .map((link) => ({
+          ...link,
+          finding: link.planFindingId ? this.planFindings.get(link.planFindingId) : undefined,
+          observation: link.observationId ? this.observations.get(link.observationId) : undefined
+        })),
+      auditEvents: this.incidentAuditEvents
+        .filter((event) => event.incidentId === incident.id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    };
+  }
+
   private withObservationContext(observation: FieldObservation): FieldObservation {
     const engagement = observation.engagementId ? this.engagements.get(observation.engagementId) : undefined;
     return {
       ...observation,
+      engagement: engagement ? { ...engagement, contractor: this.contractors.get(engagement.contractorId) } : undefined
+    };
+  }
+
+  private withIncidentContext(incident: IncidentRecord): IncidentRecord {
+    const engagement = incident.engagementId ? this.engagements.get(incident.engagementId) : undefined;
+    return {
+      ...incident,
       engagement: engagement ? { ...engagement, contractor: this.contractors.get(engagement.contractorId) } : undefined
     };
   }
@@ -1480,6 +1919,17 @@ export class MemoryStore implements AppStore {
     this.observationAuditEvents.push({
       id: randomUUID(),
       observationId,
+      eventType,
+      message,
+      actorUserId: userId,
+      createdAt: now()
+    });
+  }
+
+  private addIncidentAudit(userId: string, incidentId: string, eventType: string, message: string) {
+    this.incidentAuditEvents.push({
+      id: randomUUID(),
+      incidentId,
       eventType,
       message,
       actorUserId: userId,

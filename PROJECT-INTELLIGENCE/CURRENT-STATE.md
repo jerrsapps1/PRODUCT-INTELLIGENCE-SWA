@@ -18,6 +18,7 @@ Status date: 2026-08-09
 - The readiness model distinguishes project-level requirements from contractor-specific engagement statuses and evidence reviews.
 - The plan-review model preserves submitted plan sources, revisions, selected review sources, draft findings, reviewer edits, recommendations, approvals, and audit history separately.
 - The field-observation model preserves original field notes and photo source associations separately from editable AI suggestions, reviewer fields, follow-up state, and plan-finding links.
+- The incident-oversight model preserves contractor incident files separately from GC/project review, recommendations, project decisions, follow-up, and closure history.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1
@@ -89,11 +90,26 @@ Status date: 2026-08-09
 - Chronological project observation list with contractor/classification/category/follow-up/date filtering through the API.
 - Responsive field operations controls in the existing desktop/tablet workspace.
 
+## Implemented in Phase 6
+
+- Contractor-centered incident oversight records for project-contractor engagements, with project/GC incident support when no subcontractor applies.
+- Contractor original incident documentation and supporting files are associated through Phase 2 source/original storage without overwriting submissions.
+- Contractor-provided investigation status, classification, and corrective actions are stored separately from GC/project review.
+- Separate editable GC/project review for reviewer analysis, remaining project exposure, plan/procedure concerns, corrective-action adequacy, additional information needs, and management-review need.
+- Human-controlled project recommendations and project safety decisions.
+- Affected-work disposition without automatic contractor shutdown logic.
+- Follow-up verification records with optional evidence/observation links.
+- Close/reopen lifecycle preserving closure and reopen audit history.
+- Same-project links to Phase 4 plan findings and Phase 5 observations without causal conclusions.
+- Deterministic local incident oversight suggestions that cannot approve, close, create binding decisions, determine OSHA recordability, assign liability, or suspend contractors.
+- Project incident register with filters for contractor engagement, date, category, status, open/closed, and follow-up state.
+- Responsive incident oversight controls in the existing desktop/tablet workspace.
+
 ## Not implemented by design
 
-- Embeddings, vector search, general crawling, incidents, corrective actions, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
+- Embeddings, vector search, general crawling, OSHA recordkeeping, workers compensation claims, insurance claims, reporting, skills, persistent AI memory, historical scoring, billing, portals, and worker management.
 - Production object-storage provider integration. The abstraction exists; hosted object storage must be configured for production.
-- Phase 6+ provider-specific workflows. Phase 5 AI integration is limited to bounded field-observation suggestions and does not create incident, citation, discipline, corrective-action, or performance-rating records.
+- Phase 7+ provider-specific workflows. Phase 6 AI integration is limited to bounded incident-oversight suggestions and does not create binding project decisions, OSHA determinations, liability conclusions, citations, automatic shutdowns, or contractor discipline.
 
 ## Operational requirements
 
@@ -102,8 +118,9 @@ Status date: 2026-08-09
 - `BOOTSTRAP_EMAIL`, `BOOTSTRAP_DISPLAY_NAME`, `SESSION_SECRET`, `LOCAL_STORAGE_DIR`, and `PORT` are configurable.
 - Plan review AI is optional. Configure `PLAN_REVIEW_AI_PROVIDER=openai`, `OPENAI_API_KEY`, and optionally `OPENAI_PLAN_REVIEW_MODEL` to use the external AI provider; otherwise the deterministic local fallback is used.
 - Field observation AI currently uses deterministic local enrichment. Future provider configuration must preserve the same human-editable, non-incident, non-scoring boundaries.
+- Incident review AI currently uses deterministic local enrichment. Future provider configuration must preserve the same human-editable, non-legal, non-recordkeeping, non-automatic-decision boundaries.
 - Database backups and future object-storage backups are documented in `PROJECT-INTELLIGENCE/architecture/DEPLOYMENT.md`. Hosted PostgreSQL backup configuration is pending deployment provisioning, not optional.
 
 ## Current constraint
 
-Phase 5 Field Operations is implemented and verified. Do not begin Phase 6 Incident Oversight or any later phase.
+Phase 6 Incident Oversight is implemented and verified. Do not begin Phase 7 Reporting or any later phase.

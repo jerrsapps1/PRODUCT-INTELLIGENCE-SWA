@@ -56,6 +56,30 @@ import type {
   ObservationReferenceLinkInput,
   ObservationSearchInput,
   ObservationUpdateInput,
+  ContractorCorrectiveAction,
+  ContractorCorrectiveActionInput,
+  ContractorCorrectiveActionUpdateInput,
+  IncidentAttachment,
+  IncidentAttachmentInput,
+  IncidentAuditEvent,
+  IncidentCloseInput,
+  IncidentCreateInput,
+  IncidentDetail,
+  IncidentFollowUp,
+  IncidentFollowUpInput,
+  IncidentLink,
+  IncidentLinkInput,
+  IncidentProjectReview,
+  IncidentProjectReviewInput,
+  IncidentRecommendation,
+  IncidentRecommendationInput,
+  IncidentRecommendationUpdateInput,
+  IncidentRecord,
+  IncidentReopenInput,
+  IncidentSearchInput,
+  IncidentUpdateInput,
+  ProjectSafetyDecision,
+  ProjectSafetyDecisionInput,
   SourceChunk,
   SourceDetail,
   SourceRecord,
@@ -65,6 +89,8 @@ import type {
 import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
+  DuplicateIncidentAttachmentError,
+  DuplicateIncidentLinkError,
   DuplicateObservationPhotoError,
   DuplicateObservationPlanFindingLinkError,
   DuplicateObservationReferenceError,
@@ -76,6 +102,7 @@ import {
 } from "../store";
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
+import { runIncidentAssistant } from "../incidentAssistant";
 
 const { Pool } = pg;
 
@@ -475,6 +502,134 @@ CREATE TABLE IF NOT EXISTS observation_audit_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS incidents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  engagement_id uuid REFERENCES project_contractor_engagements(id) ON DELETE SET NULL,
+  contractor_id uuid REFERENCES contractors(id) ON DELETE SET NULL,
+  creator_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  incident_date_time timestamptz NOT NULL,
+  reported_at timestamptz NOT NULL DEFAULT now(),
+  location text,
+  activity text,
+  factual_description text NOT NULL,
+  incident_category text NOT NULL,
+  contractor_reported_classification text,
+  contractor_investigation_status text NOT NULL DEFAULT 'unknown',
+  oversight_status text NOT NULL DEFAULT 'received',
+  affected_work_disposition text NOT NULL DEFAULT 'no_restriction',
+  affected_work_scope text,
+  ai_review_status text NOT NULL DEFAULT 'not_run',
+  ai_summary text,
+  ai_suggested_concerns text,
+  ai_suggested_questions text,
+  ai_error_state text,
+  closed_at timestamptz,
+  closed_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  closure_note text,
+  project_outcome text,
+  unresolved_contractor_items text,
+  reopened_at timestamptz,
+  reopened_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  reopen_reason text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS incident_attachments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  source_id uuid NOT NULL REFERENCES sources(id) ON DELETE RESTRICT,
+  role text NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (incident_id, source_id, role)
+);
+
+CREATE TABLE IF NOT EXISTS contractor_corrective_actions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  description text NOT NULL,
+  source_id uuid REFERENCES sources(id) ON DELETE SET NULL,
+  target_date date,
+  contractor_status text NOT NULL DEFAULT 'provided',
+  evidence_received boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS incident_project_reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL UNIQUE REFERENCES incidents(id) ON DELETE CASCADE,
+  reviewer_analysis text,
+  remaining_exposure text,
+  plan_procedure_concerns text,
+  corrective_action_adequacy text,
+  additional_information_needed text,
+  management_review_needed boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS incident_recommendations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  recommendation_type text NOT NULL,
+  recommendation_text text NOT NULL,
+  status text NOT NULL DEFAULT 'open',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS project_safety_decisions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  decision_text text NOT NULL,
+  applies_to_scope text,
+  effective_date date,
+  status text NOT NULL DEFAULT 'active',
+  decision_maker_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  rationale text,
+  supporting_source_id uuid REFERENCES sources(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS incident_followups (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  status text NOT NULL,
+  verification_note text,
+  verified_at timestamptz,
+  verifier_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  linked_source_id uuid REFERENCES sources(id) ON DELETE SET NULL,
+  linked_observation_id uuid REFERENCES field_observations(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS incident_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  plan_finding_id uuid REFERENCES plan_findings(id) ON DELETE CASCADE,
+  observation_id uuid REFERENCES field_observations(id) ON DELETE CASCADE,
+  suggested boolean NOT NULL DEFAULT false,
+  accepted boolean NOT NULL DEFAULT true,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (incident_id, plan_finding_id, observation_id)
+);
+
+CREATE TABLE IF NOT EXISTS incident_audit_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  incident_id uuid NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+  event_type text NOT NULL,
+  message text NOT NULL,
+  actor_user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_safety_plans_engagement_id ON safety_plans(engagement_id);
 CREATE INDEX IF NOT EXISTS idx_safety_plan_revisions_plan_id ON safety_plan_revisions(plan_id);
 CREATE INDEX IF NOT EXISTS idx_plan_reviews_plan_id ON plan_reviews(plan_id);
@@ -487,6 +642,15 @@ CREATE INDEX IF NOT EXISTS idx_observation_photos_observation_id ON observation_
 CREATE INDEX IF NOT EXISTS idx_observation_reference_links_observation_id ON observation_reference_links(observation_id);
 CREATE INDEX IF NOT EXISTS idx_observation_plan_finding_links_observation_id ON observation_plan_finding_links(observation_id);
 CREATE INDEX IF NOT EXISTS idx_observation_audit_events_observation_id ON observation_audit_events(observation_id);
+CREATE INDEX IF NOT EXISTS idx_incidents_project_id ON incidents(project_id);
+CREATE INDEX IF NOT EXISTS idx_incidents_engagement_id ON incidents(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_incident_attachments_incident_id ON incident_attachments(incident_id);
+CREATE INDEX IF NOT EXISTS idx_contractor_corrective_actions_incident_id ON contractor_corrective_actions(incident_id);
+CREATE INDEX IF NOT EXISTS idx_incident_recommendations_incident_id ON incident_recommendations(incident_id);
+CREATE INDEX IF NOT EXISTS idx_project_safety_decisions_incident_id ON project_safety_decisions(incident_id);
+CREATE INDEX IF NOT EXISTS idx_incident_followups_incident_id ON incident_followups(incident_id);
+CREATE INDEX IF NOT EXISTS idx_incident_links_incident_id ON incident_links(incident_id);
+CREATE INDEX IF NOT EXISTS idx_incident_audit_events_incident_id ON incident_audit_events(incident_id);
 `;
 
 function clean(value: string | undefined): string | null {
@@ -897,6 +1061,158 @@ function mapObservationAudit(row: Record<string, unknown>): ObservationAuditEven
   return {
     id: String(row.id),
     observationId: String(row.observation_id),
+    eventType: String(row.event_type),
+    message: String(row.message),
+    actorUserId: String(row.actor_user_id),
+    createdAt: new Date(row.created_at as string).toISOString()
+  };
+}
+
+function mapIncident(row: Record<string, unknown>, engagement?: ProjectContractorEngagement): IncidentRecord {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    engagementId: row.engagement_id ? String(row.engagement_id) : null,
+    contractorId: row.contractor_id ? String(row.contractor_id) : null,
+    creatorUserId: String(row.creator_user_id),
+    incidentDateTime: new Date(row.incident_date_time as string).toISOString(),
+    reportedAt: new Date(row.reported_at as string).toISOString(),
+    location: row.location ? String(row.location) : null,
+    activity: row.activity ? String(row.activity) : null,
+    factualDescription: String(row.factual_description),
+    incidentCategory: row.incident_category as IncidentRecord["incidentCategory"],
+    contractorReportedClassification: row.contractor_reported_classification ? String(row.contractor_reported_classification) : null,
+    contractorInvestigationStatus: row.contractor_investigation_status as IncidentRecord["contractorInvestigationStatus"],
+    oversightStatus: row.oversight_status as IncidentRecord["oversightStatus"],
+    affectedWorkDisposition: row.affected_work_disposition as IncidentRecord["affectedWorkDisposition"],
+    affectedWorkScope: row.affected_work_scope ? String(row.affected_work_scope) : null,
+    aiReviewStatus: row.ai_review_status as IncidentRecord["aiReviewStatus"],
+    aiSummary: row.ai_summary ? String(row.ai_summary) : null,
+    aiSuggestedConcerns: row.ai_suggested_concerns ? String(row.ai_suggested_concerns) : null,
+    aiSuggestedQuestions: row.ai_suggested_questions ? String(row.ai_suggested_questions) : null,
+    aiErrorState: row.ai_error_state ? String(row.ai_error_state) : null,
+    closedAt: row.closed_at ? new Date(row.closed_at as string).toISOString() : null,
+    closedByUserId: row.closed_by_user_id ? String(row.closed_by_user_id) : null,
+    closureNote: row.closure_note ? String(row.closure_note) : null,
+    projectOutcome: row.project_outcome ? String(row.project_outcome) : null,
+    unresolvedContractorItems: row.unresolved_contractor_items ? String(row.unresolved_contractor_items) : null,
+    reopenedAt: row.reopened_at ? new Date(row.reopened_at as string).toISOString() : null,
+    reopenedByUserId: row.reopened_by_user_id ? String(row.reopened_by_user_id) : null,
+    reopenReason: row.reopen_reason ? String(row.reopen_reason) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    engagement
+  };
+}
+
+function mapIncidentAttachment(row: Record<string, unknown>, source?: SourceRecord): IncidentAttachment {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    sourceId: String(row.source_id),
+    role: row.role as IncidentAttachment["role"],
+    receivedAt: new Date(row.received_at as string).toISOString(),
+    notes: row.notes ? String(row.notes) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    source
+  };
+}
+
+function mapCorrectiveAction(row: Record<string, unknown>, source?: SourceRecord): ContractorCorrectiveAction {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    description: String(row.description),
+    sourceId: row.source_id ? String(row.source_id) : null,
+    targetDate: toIsoDate(row.target_date as Date | string | null),
+    contractorStatus: row.contractor_status as ContractorCorrectiveAction["contractorStatus"],
+    evidenceReceived: Boolean(row.evidence_received),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    source
+  };
+}
+
+function mapIncidentProjectReview(row: Record<string, unknown>): IncidentProjectReview {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    reviewerAnalysis: row.reviewer_analysis ? String(row.reviewer_analysis) : null,
+    remainingExposure: row.remaining_exposure ? String(row.remaining_exposure) : null,
+    planProcedureConcerns: row.plan_procedure_concerns ? String(row.plan_procedure_concerns) : null,
+    correctiveActionAdequacy: row.corrective_action_adequacy ? String(row.corrective_action_adequacy) : null,
+    additionalInformationNeeded: row.additional_information_needed ? String(row.additional_information_needed) : null,
+    managementReviewNeeded: Boolean(row.management_review_needed),
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapIncidentRecommendation(row: Record<string, unknown>): IncidentRecommendation {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    recommendationType: row.recommendation_type as IncidentRecommendation["recommendationType"],
+    recommendationText: String(row.recommendation_text),
+    status: row.status as IncidentRecommendation["status"],
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString()
+  };
+}
+
+function mapProjectSafetyDecision(row: Record<string, unknown>, source?: SourceRecord): ProjectSafetyDecision {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    projectId: String(row.project_id),
+    decisionText: String(row.decision_text),
+    appliesToScope: row.applies_to_scope ? String(row.applies_to_scope) : null,
+    effectiveDate: toIsoDate(row.effective_date as Date | string | null),
+    status: row.status as ProjectSafetyDecision["status"],
+    decisionMakerUserId: String(row.decision_maker_user_id),
+    rationale: row.rationale ? String(row.rationale) : null,
+    supportingSourceId: row.supporting_source_id ? String(row.supporting_source_id) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    source
+  };
+}
+
+function mapIncidentFollowUp(row: Record<string, unknown>, source?: SourceRecord, observation?: FieldObservation): IncidentFollowUp {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    status: row.status as IncidentFollowUp["status"],
+    verificationNote: row.verification_note ? String(row.verification_note) : null,
+    verifiedAt: row.verified_at ? new Date(row.verified_at as string).toISOString() : null,
+    verifierUserId: String(row.verifier_user_id),
+    linkedSourceId: row.linked_source_id ? String(row.linked_source_id) : null,
+    linkedObservationId: row.linked_observation_id ? String(row.linked_observation_id) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    source,
+    observation
+  };
+}
+
+function mapIncidentLink(row: Record<string, unknown>, finding?: PlanFinding, observation?: FieldObservation): IncidentLink {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
+    planFindingId: row.plan_finding_id ? String(row.plan_finding_id) : null,
+    observationId: row.observation_id ? String(row.observation_id) : null,
+    suggested: Boolean(row.suggested),
+    accepted: Boolean(row.accepted),
+    note: row.note ? String(row.note) : null,
+    createdAt: new Date(row.created_at as string).toISOString(),
+    finding,
+    observation
+  };
+}
+
+function mapIncidentAudit(row: Record<string, unknown>): IncidentAuditEvent {
+  return {
+    id: String(row.id),
+    incidentId: String(row.incident_id),
     eventType: String(row.event_type),
     message: String(row.message),
     actorUserId: String(row.actor_user_id),
@@ -2076,6 +2392,202 @@ export class PostgresStore implements AppStore {
     await this.addObservationAudit(userId, current.rows[0].observation_id, "plan_finding_link_removed", "Removed plan finding link");
   }
 
+  async listIncidents(userId: string, filters: IncidentSearchInput): Promise<IncidentRecord[]> {
+    if (!(await this.getProject(userId, filters.projectId))) return [];
+    const clauses = ["project_id = $1"];
+    const values: unknown[] = [filters.projectId];
+    if (filters.engagementId) { values.push(filters.engagementId); clauses.push(`engagement_id = $${values.length}`); }
+    if (filters.category) { values.push(filters.category); clauses.push(`incident_category = $${values.length}`); }
+    if (filters.oversightStatus) { values.push(filters.oversightStatus); clauses.push(`oversight_status = $${values.length}`); }
+    if (filters.openOnly) clauses.push("oversight_status <> 'closed'");
+    if (filters.followUpRequired !== undefined) clauses.push(filters.followUpRequired ? "oversight_status IN ('follow_up_required','verification_pending')" : "oversight_status NOT IN ('follow_up_required','verification_pending')");
+    if (filters.dateFrom) { values.push(filters.dateFrom); clauses.push(`incident_date_time::date >= $${values.length}`); }
+    if (filters.dateTo) { values.push(filters.dateTo); clauses.push(`incident_date_time::date <= $${values.length}`); }
+    const result = await this.pool.query(`SELECT * FROM incidents WHERE ${clauses.join(" AND ")} ORDER BY incident_date_time DESC`, values);
+    return Promise.all(result.rows.map((row) => this.mapIncidentWithContext(row)));
+  }
+
+  async createIncident(userId: string, input: IncidentCreateInput): Promise<IncidentDetail> {
+    if (!(await this.getProject(userId, input.projectId))) throw new Error("Project not found");
+    const engagement = input.engagementId ? await this.getEngagementForUser(userId, input.engagementId) : null;
+    if (input.engagementId && (!engagement || engagement.projectId !== input.projectId)) throw new Error("Incident engagement must belong to the selected project");
+    const result = await this.pool.query(
+      `INSERT INTO incidents
+       (project_id, engagement_id, contractor_id, creator_user_id, incident_date_time, reported_at, location, activity,
+        factual_description, incident_category, contractor_reported_classification, contractor_investigation_status, affected_work_scope)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6::timestamptz, now()), $7, $8, $9, $10, $11, $12, $13)
+       RETURNING *`,
+      [input.projectId, engagement?.id ?? null, engagement?.contractorId ?? null, userId, input.incidentDateTime, clean(input.reportedAt), clean(input.location), clean(input.activity), input.factualDescription.trim(), input.incidentCategory ?? "other", clean(input.contractorReportedClassification), input.contractorInvestigationStatus ?? "unknown", clean(input.affectedWorkScope)]
+    );
+    await this.addIncidentAudit(userId, result.rows[0].id, "incident_created", "Created incident oversight record");
+    return (await this.getIncident(userId, result.rows[0].id)) as IncidentDetail;
+  }
+
+  async getIncident(userId: string, incidentId: string): Promise<IncidentDetail | null> {
+    const result = await this.pool.query(
+      `SELECT i.* FROM incidents i JOIN projects p ON p.id = i.project_id WHERE p.owner_user_id = $1 AND i.id = $2`,
+      [userId, incidentId]
+    );
+    return result.rows[0] ? this.buildIncidentDetail(userId, result.rows[0]) : null;
+  }
+
+  async updateIncident(userId: string, incidentId: string, input: IncidentUpdateInput): Promise<IncidentDetail | null> {
+    const current = await this.getIncident(userId, incidentId);
+    if (!current) return null;
+    const result = await this.pool.query(
+      `UPDATE incidents SET incident_date_time = $2, reported_at = $3, location = $4, activity = $5,
+       factual_description = $6, incident_category = $7, contractor_reported_classification = $8,
+       contractor_investigation_status = $9, affected_work_disposition = $10, affected_work_scope = $11,
+       oversight_status = $12, updated_at = now() WHERE id = $1 RETURNING *`,
+      [incidentId, input.incidentDateTime ?? current.incidentDateTime, input.reportedAt === undefined ? current.reportedAt : clean(input.reportedAt) ?? current.reportedAt, input.location === undefined ? current.location : clean(input.location), input.activity === undefined ? current.activity : clean(input.activity), input.factualDescription?.trim() || current.factualDescription, input.incidentCategory ?? current.incidentCategory, input.contractorReportedClassification === undefined ? current.contractorReportedClassification : clean(input.contractorReportedClassification), input.contractorInvestigationStatus ?? current.contractorInvestigationStatus, input.affectedWorkDisposition ?? current.affectedWorkDisposition, input.affectedWorkScope === undefined ? current.affectedWorkScope : clean(input.affectedWorkScope), input.oversightStatus ?? current.oversightStatus]
+    );
+    await this.addIncidentAudit(userId, incidentId, "incident_updated", "Updated incident factual or oversight fields");
+    return this.buildIncidentDetail(userId, result.rows[0]);
+  }
+
+  async attachIncidentSource(userId: string, incidentId: string, input: IncidentAttachmentInput): Promise<IncidentAttachment> {
+    const incident = await this.getIncident(userId, incidentId);
+    if (!incident) throw new Error("Incident not found");
+    const source = await this.getSource(userId, input.sourceId);
+    if (!source) throw new Error("Source not found");
+    if (source.projectId && source.projectId !== incident.projectId) throw new Error("Incident source must belong to the selected project");
+    try {
+      const result = await this.pool.query("INSERT INTO incident_attachments (incident_id, source_id, role, received_at, notes) VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), $5) RETURNING *", [incidentId, source.id, input.role, clean(input.receivedAt), clean(input.notes)]);
+      await this.addIncidentAudit(userId, incidentId, input.role === "contractor_report" ? "contractor_report_received" : "attachment_added", `Attached incident source: ${source.title}`);
+      return mapIncidentAttachment(result.rows[0], source);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicateIncidentAttachmentError();
+      throw error;
+    }
+  }
+
+  async removeIncidentAttachment(userId: string, attachmentId: string): Promise<void> {
+    const current = await this.pool.query("SELECT * FROM incident_attachments WHERE id = $1", [attachmentId]);
+    if (!current.rows[0] || !(await this.getIncident(userId, current.rows[0].incident_id))) return;
+    await this.pool.query("DELETE FROM incident_attachments WHERE id = $1", [attachmentId]);
+    await this.addIncidentAudit(userId, current.rows[0].incident_id, "attachment_removed", "Removed incident-source association; original source was preserved");
+  }
+
+  async createContractorCorrectiveAction(userId: string, incidentId: string, input: ContractorCorrectiveActionInput): Promise<ContractorCorrectiveAction> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    const source = input.sourceId ? await this.getSource(userId, input.sourceId) : null;
+    if (input.sourceId && !source) throw new Error("Source not found");
+    const result = await this.pool.query("INSERT INTO contractor_corrective_actions (incident_id, description, source_id, target_date, contractor_status, evidence_received) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *", [incidentId, input.description.trim(), clean(input.sourceId), clean(input.targetDate), input.contractorStatus ?? "provided", input.evidenceReceived ?? false]);
+    await this.addIncidentAudit(userId, incidentId, "contractor_corrective_action_recorded", "Recorded contractor-provided corrective action");
+    return mapCorrectiveAction(result.rows[0], source ?? undefined);
+  }
+
+  async updateContractorCorrectiveAction(userId: string, actionId: string, input: ContractorCorrectiveActionUpdateInput): Promise<ContractorCorrectiveAction | null> {
+    const current = await this.pool.query("SELECT * FROM contractor_corrective_actions WHERE id = $1", [actionId]);
+    if (!current.rows[0] || !(await this.getIncident(userId, current.rows[0].incident_id))) return null;
+    const result = await this.pool.query("UPDATE contractor_corrective_actions SET description = $2, source_id = $3, target_date = $4, contractor_status = $5, evidence_received = $6, updated_at = now() WHERE id = $1 RETURNING *", [actionId, input.description ?? current.rows[0].description, input.sourceId === undefined ? current.rows[0].source_id : clean(input.sourceId), input.targetDate === undefined ? current.rows[0].target_date : clean(input.targetDate), input.contractorStatus ?? current.rows[0].contractor_status, input.evidenceReceived ?? current.rows[0].evidence_received]);
+    await this.addIncidentAudit(userId, current.rows[0].incident_id, "contractor_corrective_action_updated", "Updated contractor-provided corrective action");
+    return mapCorrectiveAction(result.rows[0], result.rows[0].source_id ? (await this.getSource(userId, result.rows[0].source_id)) ?? undefined : undefined);
+  }
+
+  async upsertIncidentProjectReview(userId: string, incidentId: string, input: IncidentProjectReviewInput): Promise<IncidentProjectReview> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    const result = await this.pool.query(
+      `INSERT INTO incident_project_reviews (incident_id, reviewer_analysis, remaining_exposure, plan_procedure_concerns, corrective_action_adequacy, additional_information_needed, management_review_needed)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (incident_id) DO UPDATE SET reviewer_analysis = EXCLUDED.reviewer_analysis, remaining_exposure = EXCLUDED.remaining_exposure,
+       plan_procedure_concerns = EXCLUDED.plan_procedure_concerns, corrective_action_adequacy = EXCLUDED.corrective_action_adequacy,
+       additional_information_needed = EXCLUDED.additional_information_needed, management_review_needed = EXCLUDED.management_review_needed, updated_at = now()
+       RETURNING *`,
+      [incidentId, clean(input.reviewerAnalysis), clean(input.remainingExposure), clean(input.planProcedureConcerns), clean(input.correctiveActionAdequacy), clean(input.additionalInformationNeeded), input.managementReviewNeeded ?? false]
+    );
+    await this.pool.query("UPDATE incidents SET oversight_status = CASE WHEN oversight_status = 'received' THEN 'under_project_review' ELSE oversight_status END, updated_at = now() WHERE id = $1", [incidentId]);
+    await this.addIncidentAudit(userId, incidentId, "project_review_edited", "Saved separate GC/project incident review");
+    return mapIncidentProjectReview(result.rows[0]);
+  }
+
+  async createIncidentRecommendation(userId: string, incidentId: string, input: IncidentRecommendationInput): Promise<IncidentRecommendation> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    const result = await this.pool.query("INSERT INTO incident_recommendations (incident_id, recommendation_type, recommendation_text, status) VALUES ($1, $2, $3, $4) RETURNING *", [incidentId, input.recommendationType, input.recommendationText.trim(), input.status ?? "open"]);
+    await this.addIncidentAudit(userId, incidentId, "recommendation_added", "Added human-controlled project recommendation");
+    return mapIncidentRecommendation(result.rows[0]);
+  }
+
+  async updateIncidentRecommendation(userId: string, recommendationId: string, input: IncidentRecommendationUpdateInput): Promise<IncidentRecommendation | null> {
+    const current = await this.pool.query("SELECT * FROM incident_recommendations WHERE id = $1", [recommendationId]);
+    if (!current.rows[0] || !(await this.getIncident(userId, current.rows[0].incident_id))) return null;
+    const result = await this.pool.query("UPDATE incident_recommendations SET recommendation_type = $2, recommendation_text = $3, status = $4, updated_at = now() WHERE id = $1 RETURNING *", [recommendationId, input.recommendationType ?? current.rows[0].recommendation_type, input.recommendationText ?? current.rows[0].recommendation_text, input.status ?? current.rows[0].status]);
+    await this.addIncidentAudit(userId, current.rows[0].incident_id, "recommendation_updated", "Updated project recommendation");
+    return mapIncidentRecommendation(result.rows[0]);
+  }
+
+  async createProjectSafetyDecision(userId: string, incidentId: string, input: ProjectSafetyDecisionInput): Promise<ProjectSafetyDecision> {
+    const incident = await this.getIncident(userId, incidentId);
+    if (!incident) throw new Error("Incident not found");
+    const source = input.supportingSourceId ? await this.getSource(userId, input.supportingSourceId) : null;
+    if (input.supportingSourceId && !source) throw new Error("Source not found");
+    const result = await this.pool.query("INSERT INTO project_safety_decisions (incident_id, project_id, decision_text, applies_to_scope, effective_date, status, decision_maker_user_id, rationale, supporting_source_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *", [incidentId, incident.projectId, input.decisionText.trim(), clean(input.appliesToScope), clean(input.effectiveDate), input.status ?? "active", userId, clean(input.rationale), clean(input.supportingSourceId)]);
+    await this.addIncidentAudit(userId, incidentId, "project_decision_created", "Created human-confirmed project safety decision");
+    return mapProjectSafetyDecision(result.rows[0], source ?? undefined);
+  }
+
+  async createIncidentFollowUp(userId: string, incidentId: string, input: IncidentFollowUpInput): Promise<IncidentFollowUp> {
+    if (!(await this.getIncident(userId, incidentId))) throw new Error("Incident not found");
+    const source = input.linkedSourceId ? await this.getSource(userId, input.linkedSourceId) : null;
+    const observation = input.linkedObservationId ? await this.getObservation(userId, input.linkedObservationId) : null;
+    if (input.linkedSourceId && !source) throw new Error("Source not found");
+    if (input.linkedObservationId && !observation) throw new Error("Observation not found");
+    const result = await this.pool.query("INSERT INTO incident_followups (incident_id, status, verification_note, verified_at, verifier_user_id, linked_source_id, linked_observation_id) VALUES ($1,$2,$3,COALESCE($4::timestamptz, now()),$5,$6,$7) RETURNING *", [incidentId, input.status, clean(input.verificationNote), clean(input.verifiedAt), userId, clean(input.linkedSourceId), clean(input.linkedObservationId)]);
+    await this.addIncidentAudit(userId, incidentId, "follow_up_recorded", "Recorded project-level follow-up verification");
+    return mapIncidentFollowUp(result.rows[0], source ?? undefined, observation ?? undefined);
+  }
+
+  async linkIncidentRecord(userId: string, incidentId: string, input: IncidentLinkInput): Promise<IncidentLink> {
+    const incident = await this.getIncident(userId, incidentId);
+    if (!incident) throw new Error("Incident not found");
+    const planFindingId = clean(input.planFindingId);
+    const observationId = clean(input.observationId);
+    const finding = planFindingId ? await this.getPlanFindingForProject(userId, planFindingId, incident.projectId) : null;
+    const observation = observationId ? await this.getObservation(userId, observationId) : null;
+    if (planFindingId && !finding) throw new Error("Plan finding not found");
+    if (observationId && (!observation || observation.projectId !== incident.projectId)) throw new Error("Observation not found");
+    try {
+      const result = await this.pool.query("INSERT INTO incident_links (incident_id, plan_finding_id, observation_id, suggested, accepted, note) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [incidentId, planFindingId, observationId, input.suggested ?? false, input.accepted ?? true, clean(input.note)]);
+      await this.addIncidentAudit(userId, incidentId, planFindingId ? "plan_finding_link_added" : "observation_link_added", "Linked related plan finding or observation");
+      return mapIncidentLink(result.rows[0], finding ?? undefined, observation ?? undefined);
+    } catch (error) {
+      if ((error as { code?: string }).code === "23505") throw new DuplicateIncidentLinkError();
+      throw error;
+    }
+  }
+
+  async unlinkIncidentRecord(userId: string, linkId: string): Promise<void> {
+    const current = await this.pool.query("SELECT * FROM incident_links WHERE id = $1", [linkId]);
+    if (!current.rows[0] || !(await this.getIncident(userId, current.rows[0].incident_id))) return;
+    await this.pool.query("DELETE FROM incident_links WHERE id = $1", [linkId]);
+    await this.addIncidentAudit(userId, current.rows[0].incident_id, "incident_link_removed", "Removed incident relationship link");
+  }
+
+  async runIncidentAiReview(userId: string, incidentId: string): Promise<IncidentDetail | null> {
+    const incident = await this.getIncident(userId, incidentId);
+    if (!incident) return null;
+    await this.pool.query("UPDATE incidents SET ai_review_status = 'processing', ai_error_state = NULL, updated_at = now() WHERE id = $1", [incidentId]);
+    const documents = incident.attachments.map((attachment) => attachment.source).filter(Boolean) as SourceDetail[];
+    const assistant = await runIncidentAssistant({ factualDescription: incident.factualDescription, activity: incident.activity, contractorClassification: incident.contractorReportedClassification, documents, findings: incident.links.map((link) => link.finding).filter(Boolean) as PlanFinding[], observations: incident.links.map((link) => link.observation).filter(Boolean) as FieldObservation[] });
+    await this.pool.query("UPDATE incidents SET ai_review_status = $2, ai_summary = $3, ai_suggested_concerns = $4, ai_suggested_questions = $5, ai_error_state = $6, updated_at = now() WHERE id = $1", [incidentId, assistant.processingStatus, assistant.processingStatus === "ready" ? assistant.summary : incident.aiSummary, assistant.processingStatus === "ready" ? assistant.suggestedConcerns : incident.aiSuggestedConcerns, assistant.processingStatus === "ready" ? assistant.suggestedQuestions : incident.aiSuggestedQuestions, assistant.errorState]);
+    await this.addIncidentAudit(userId, incidentId, assistant.processingStatus === "ready" ? "ai_review_ready" : "ai_review_failed", assistant.processingStatus === "ready" ? "Incident suggestions ready" : "Incident was preserved, but AI suggestions failed");
+    return this.getIncident(userId, incidentId);
+  }
+
+  async closeIncident(userId: string, incidentId: string, input: IncidentCloseInput): Promise<IncidentDetail | null> {
+    if (!(await this.getIncident(userId, incidentId))) return null;
+    const result = await this.pool.query("UPDATE incidents SET oversight_status = 'closed', closed_at = now(), closed_by_user_id = $2, closure_note = $3, project_outcome = $4, unresolved_contractor_items = $5, updated_at = now() WHERE id = $1 RETURNING *", [incidentId, userId, input.closureNote.trim(), clean(input.projectOutcome), clean(input.unresolvedContractorItems)]);
+    await this.addIncidentAudit(userId, incidentId, "incident_closed", "Closed project oversight record");
+    return this.buildIncidentDetail(userId, result.rows[0]);
+  }
+
+  async reopenIncident(userId: string, incidentId: string, input: IncidentReopenInput): Promise<IncidentDetail | null> {
+    if (!(await this.getIncident(userId, incidentId))) return null;
+    const result = await this.pool.query("UPDATE incidents SET oversight_status = 'under_project_review', reopened_at = now(), reopened_by_user_id = $2, reopen_reason = $3, updated_at = now() WHERE id = $1 RETURNING *", [incidentId, userId, input.reason.trim()]);
+    await this.addIncidentAudit(userId, incidentId, "incident_reopened", input.reason.trim());
+    return this.buildIncidentDetail(userId, result.rows[0]);
+  }
+
   private async getEngagementForUser(userId: string, engagementId: string): Promise<ProjectContractorEngagement | null> {
     const result = await this.pool.query(
       `SELECT e.*
@@ -2152,6 +2664,34 @@ export class PostgresStore implements AppStore {
     return result.rows[0] ? mapPlanFinding(result.rows[0]) : null;
   }
 
+  private async mapIncidentWithContext(row: Record<string, unknown>): Promise<IncidentRecord> {
+    const engagement = row.engagement_id ? await this.getEngagementById(String(row.engagement_id)) : undefined;
+    return mapIncident(row, engagement ?? undefined);
+  }
+
+  private async buildIncidentDetail(userId: string, row: Record<string, unknown>): Promise<IncidentDetail> {
+    const incident = await this.mapIncidentWithContext(row);
+    const attachments = await this.pool.query("SELECT * FROM incident_attachments WHERE incident_id = $1 ORDER BY created_at", [incident.id]);
+    const actions = await this.pool.query("SELECT * FROM contractor_corrective_actions WHERE incident_id = $1 ORDER BY created_at", [incident.id]);
+    const review = await this.pool.query("SELECT * FROM incident_project_reviews WHERE incident_id = $1", [incident.id]);
+    const recommendations = await this.pool.query("SELECT * FROM incident_recommendations WHERE incident_id = $1 ORDER BY created_at", [incident.id]);
+    const decisions = await this.pool.query("SELECT * FROM project_safety_decisions WHERE incident_id = $1 ORDER BY created_at", [incident.id]);
+    const followUps = await this.pool.query("SELECT * FROM incident_followups WHERE incident_id = $1 ORDER BY created_at", [incident.id]);
+    const links = await this.pool.query("SELECT * FROM incident_links WHERE incident_id = $1 ORDER BY created_at", [incident.id]);
+    const audit = await this.pool.query("SELECT * FROM incident_audit_events WHERE incident_id = $1 ORDER BY created_at", [incident.id]);
+    return {
+      ...incident,
+      attachments: await Promise.all(attachments.rows.map(async (attachment) => mapIncidentAttachment(attachment, (await this.getSource(userId, attachment.source_id)) ?? undefined))),
+      contractorCorrectiveActions: await Promise.all(actions.rows.map(async (action) => mapCorrectiveAction(action, action.source_id ? (await this.getSource(userId, action.source_id)) ?? undefined : undefined))),
+      projectReview: review.rows[0] ? mapIncidentProjectReview(review.rows[0]) : null,
+      recommendations: recommendations.rows.map(mapIncidentRecommendation),
+      projectDecisions: await Promise.all(decisions.rows.map(async (decision) => mapProjectSafetyDecision(decision, decision.supporting_source_id ? (await this.getSource(userId, decision.supporting_source_id)) ?? undefined : undefined))),
+      followUps: await Promise.all(followUps.rows.map(async (followUp) => mapIncidentFollowUp(followUp, followUp.linked_source_id ? (await this.getSource(userId, followUp.linked_source_id)) ?? undefined : undefined, followUp.linked_observation_id ? (await this.getObservation(userId, followUp.linked_observation_id)) ?? undefined : undefined))),
+      links: await Promise.all(links.rows.map(async (link) => mapIncidentLink(link, link.plan_finding_id ? (await this.getFindingForUser(userId, link.plan_finding_id)) ?? undefined : undefined, link.observation_id ? (await this.getObservation(userId, link.observation_id)) ?? undefined : undefined))),
+      auditEvents: audit.rows.map(mapIncidentAudit)
+    };
+  }
+
   private async mapObservationWithContext(row: Record<string, unknown>): Promise<FieldObservation> {
     const engagement = row.engagement_id ? await this.getEngagementById(String(row.engagement_id)) : undefined;
     return mapObservation(row, engagement ?? undefined);
@@ -2204,6 +2744,13 @@ export class PostgresStore implements AppStore {
     await this.pool.query(
       "INSERT INTO observation_audit_events (observation_id, event_type, message, actor_user_id) VALUES ($1, $2, $3, $4)",
       [observationId, eventType, message, userId]
+    );
+  }
+
+  private async addIncidentAudit(userId: string, incidentId: string, eventType: string, message: string): Promise<void> {
+    await this.pool.query(
+      "INSERT INTO incident_audit_events (incident_id, event_type, message, actor_user_id) VALUES ($1, $2, $3, $4)",
+      [incidentId, eventType, message, userId]
     );
   }
 

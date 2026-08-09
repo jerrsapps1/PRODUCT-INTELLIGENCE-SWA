@@ -55,6 +55,29 @@ import type {
   ObservationReferenceLinkInput,
   ObservationSearchInput,
   ObservationUpdateInput,
+  ContractorCorrectiveAction,
+  ContractorCorrectiveActionInput,
+  ContractorCorrectiveActionUpdateInput,
+  IncidentAttachment,
+  IncidentAttachmentInput,
+  IncidentCloseInput,
+  IncidentCreateInput,
+  IncidentDetail,
+  IncidentFollowUp,
+  IncidentFollowUpInput,
+  IncidentLink,
+  IncidentLinkInput,
+  IncidentProjectReview,
+  IncidentProjectReviewInput,
+  IncidentRecommendation,
+  IncidentRecommendationInput,
+  IncidentRecommendationUpdateInput,
+  IncidentRecord,
+  IncidentReopenInput,
+  IncidentSearchInput,
+  IncidentUpdateInput,
+  ProjectSafetyDecision,
+  ProjectSafetyDecisionInput,
   UserSummary
 } from "../shared/contracts";
 
@@ -144,6 +167,24 @@ export interface AppStore {
   unlinkObservationReference(userId: string, linkId: string): Promise<void>;
   linkObservationPlanFinding(userId: string, observationId: string, input: ObservationPlanFindingLinkInput): Promise<ObservationPlanFindingLink>;
   unlinkObservationPlanFinding(userId: string, linkId: string): Promise<void>;
+  listIncidents(userId: string, filters: IncidentSearchInput): Promise<IncidentRecord[]>;
+  createIncident(userId: string, input: IncidentCreateInput): Promise<IncidentDetail>;
+  getIncident(userId: string, incidentId: string): Promise<IncidentDetail | null>;
+  updateIncident(userId: string, incidentId: string, input: IncidentUpdateInput): Promise<IncidentDetail | null>;
+  attachIncidentSource(userId: string, incidentId: string, input: IncidentAttachmentInput): Promise<IncidentAttachment>;
+  removeIncidentAttachment(userId: string, attachmentId: string): Promise<void>;
+  createContractorCorrectiveAction(userId: string, incidentId: string, input: ContractorCorrectiveActionInput): Promise<ContractorCorrectiveAction>;
+  updateContractorCorrectiveAction(userId: string, actionId: string, input: ContractorCorrectiveActionUpdateInput): Promise<ContractorCorrectiveAction | null>;
+  upsertIncidentProjectReview(userId: string, incidentId: string, input: IncidentProjectReviewInput): Promise<IncidentProjectReview>;
+  createIncidentRecommendation(userId: string, incidentId: string, input: IncidentRecommendationInput): Promise<IncidentRecommendation>;
+  updateIncidentRecommendation(userId: string, recommendationId: string, input: IncidentRecommendationUpdateInput): Promise<IncidentRecommendation | null>;
+  createProjectSafetyDecision(userId: string, incidentId: string, input: ProjectSafetyDecisionInput): Promise<ProjectSafetyDecision>;
+  createIncidentFollowUp(userId: string, incidentId: string, input: IncidentFollowUpInput): Promise<IncidentFollowUp>;
+  linkIncidentRecord(userId: string, incidentId: string, input: IncidentLinkInput): Promise<IncidentLink>;
+  unlinkIncidentRecord(userId: string, linkId: string): Promise<void>;
+  runIncidentAiReview(userId: string, incidentId: string): Promise<IncidentDetail | null>;
+  closeIncident(userId: string, incidentId: string, input: IncidentCloseInput): Promise<IncidentDetail | null>;
+  reopenIncident(userId: string, incidentId: string, input: IncidentReopenInput): Promise<IncidentDetail | null>;
 }
 
 export class DuplicateEngagementError extends Error {
@@ -191,5 +232,17 @@ export class DuplicateObservationReferenceError extends Error {
 export class DuplicateObservationPlanFindingLinkError extends Error {
   constructor() {
     super("Plan finding is already linked to this observation");
+  }
+}
+
+export class DuplicateIncidentAttachmentError extends Error {
+  constructor() {
+    super("Source is already attached to this incident with that role");
+  }
+}
+
+export class DuplicateIncidentLinkError extends Error {
+  constructor() {
+    super("Incident link already exists");
   }
 }

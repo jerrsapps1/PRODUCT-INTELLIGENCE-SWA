@@ -24,6 +24,20 @@ import {
   observationReferenceLinkSchema,
   observationSearchSchema,
   observationUpdateSchema,
+  contractorCorrectiveActionSchema,
+  contractorCorrectiveActionUpdateSchema,
+  incidentAttachmentSchema,
+  incidentCloseSchema,
+  incidentCreateSchema,
+  incidentFollowUpSchema,
+  incidentLinkSchema,
+  incidentProjectReviewSchema,
+  incidentRecommendationSchema,
+  incidentRecommendationUpdateSchema,
+  incidentReopenSchema,
+  incidentSearchSchema,
+  incidentUpdateSchema,
+  projectSafetyDecisionSchema,
   readinessEvidenceCreateSchema,
   readinessEvidenceReviewSchema,
   readinessRequirementCreateSchema,
@@ -45,6 +59,8 @@ import { MemoryObjectStorage, type ObjectStorage } from "./storage";
 import {
   DuplicateEngagementError,
   DuplicateEvidenceAssociationError,
+  DuplicateIncidentAttachmentError,
+  DuplicateIncidentLinkError,
   DuplicateObservationPhotoError,
   DuplicateObservationPlanFindingLinkError,
   DuplicateObservationReferenceError,
@@ -510,6 +526,141 @@ export async function createApp(options: AppOptions) {
         return;
       }
 
+      if (method === "GET" && parts.join("/") === "api/incidents") {
+        const filters = incidentSearchSchema.parse(Object.fromEntries(url.searchParams.entries()));
+        sendJson(res, 200, { incidents: await store.listIncidents(userId, filters) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/incidents") {
+        const input = await readJson(req, incidentCreateSchema);
+        sendJson(res, 201, {
+          incident: await store.createIncident(userId, {
+            ...input,
+            incidentCategory: input.incidentCategory ?? "other",
+            contractorInvestigationStatus: input.contractorInvestigationStatus ?? "unknown"
+          })
+        });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "incidents" && parts.length >= 3) {
+        const incidentId = parts[2];
+        if (method === "GET" && parts.length === 3) {
+          const incident = await store.getIncident(userId, incidentId);
+          if (!incident) sendJson(res, 404, { error: "Incident not found" });
+          else sendJson(res, 200, { incident });
+          return;
+        }
+        if (method === "PATCH" && parts.length === 3) {
+          const incident = await store.updateIncident(userId, incidentId, await readJson(req, incidentUpdateSchema));
+          if (!incident) sendJson(res, 404, { error: "Incident not found" });
+          else sendJson(res, 200, { incident });
+          return;
+        }
+        if (method === "POST" && parts[3] === "attachments" && parts.length === 4) {
+          const attachment = await store.attachIncidentSource(userId, incidentId, await readJson(req, incidentAttachmentSchema));
+          sendJson(res, 201, { attachment });
+          return;
+        }
+        if (method === "POST" && parts[3] === "contractor-corrective-actions" && parts.length === 4) {
+          const input = await readJson(req, contractorCorrectiveActionSchema);
+          const action = await store.createContractorCorrectiveAction(userId, incidentId, {
+            ...input,
+            contractorStatus: input.contractorStatus ?? "provided",
+            evidenceReceived: input.evidenceReceived ?? false
+          });
+          sendJson(res, 201, { correctiveAction: action });
+          return;
+        }
+        if (method === "PUT" && parts[3] === "project-review" && parts.length === 4) {
+          const input = await readJson(req, incidentProjectReviewSchema);
+          const review = await store.upsertIncidentProjectReview(userId, incidentId, {
+            ...input,
+            managementReviewNeeded: input.managementReviewNeeded ?? false
+          });
+          sendJson(res, 200, { review });
+          return;
+        }
+        if (method === "POST" && parts[3] === "recommendations" && parts.length === 4) {
+          const input = await readJson(req, incidentRecommendationSchema);
+          const recommendation = await store.createIncidentRecommendation(userId, incidentId, {
+            ...input,
+            status: input.status ?? "open"
+          });
+          sendJson(res, 201, { recommendation });
+          return;
+        }
+        if (method === "POST" && parts[3] === "project-decisions" && parts.length === 4) {
+          const input = await readJson(req, projectSafetyDecisionSchema);
+          const decision = await store.createProjectSafetyDecision(userId, incidentId, {
+            ...input,
+            status: input.status ?? "active"
+          });
+          sendJson(res, 201, { decision });
+          return;
+        }
+        if (method === "POST" && parts[3] === "follow-ups" && parts.length === 4) {
+          const followUp = await store.createIncidentFollowUp(userId, incidentId, await readJson(req, incidentFollowUpSchema));
+          sendJson(res, 201, { followUp });
+          return;
+        }
+        if (method === "POST" && parts[3] === "links" && parts.length === 4) {
+          const input = await readJson(req, incidentLinkSchema);
+          const link = await store.linkIncidentRecord(userId, incidentId, {
+            ...input,
+            suggested: input.suggested ?? false,
+            accepted: input.accepted ?? true
+          });
+          sendJson(res, 201, { link });
+          return;
+        }
+        if (method === "POST" && parts[3] === "ai-review-runs" && parts.length === 4) {
+          const incident = await store.runIncidentAiReview(userId, incidentId);
+          if (!incident) sendJson(res, 404, { error: "Incident not found" });
+          else sendJson(res, 201, { incident });
+          return;
+        }
+        if (method === "POST" && parts[3] === "close" && parts.length === 4) {
+          const incident = await store.closeIncident(userId, incidentId, await readJson(req, incidentCloseSchema));
+          if (!incident) sendJson(res, 404, { error: "Incident not found" });
+          else sendJson(res, 200, { incident });
+          return;
+        }
+        if (method === "POST" && parts[3] === "reopen" && parts.length === 4) {
+          const incident = await store.reopenIncident(userId, incidentId, await readJson(req, incidentReopenSchema));
+          if (!incident) sendJson(res, 404, { error: "Incident not found" });
+          else sendJson(res, 200, { incident });
+          return;
+        }
+      }
+
+      if (parts[0] === "api" && parts[1] === "incident-attachments" && parts.length === 3 && method === "DELETE") {
+        await store.removeIncidentAttachment(userId, parts[2]);
+        sendNoContent(res);
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "contractor-corrective-actions" && parts.length === 3 && method === "PATCH") {
+        const action = await store.updateContractorCorrectiveAction(userId, parts[2], await readJson(req, contractorCorrectiveActionUpdateSchema));
+        if (!action) sendJson(res, 404, { error: "Corrective action not found" });
+        else sendJson(res, 200, { correctiveAction: action });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "incident-recommendations" && parts.length === 3 && method === "PATCH") {
+        const recommendation = await store.updateIncidentRecommendation(userId, parts[2], await readJson(req, incidentRecommendationUpdateSchema));
+        if (!recommendation) sendJson(res, 404, { error: "Recommendation not found" });
+        else sendJson(res, 200, { recommendation });
+        return;
+      }
+
+      if (parts[0] === "api" && parts[1] === "incident-links" && parts.length === 3 && method === "DELETE") {
+        await store.unlinkIncidentRecord(userId, parts[2]);
+        sendNoContent(res);
+        return;
+      }
+
       if (method === "GET" && parts.join("/") === "api/sources") {
         const filters = sourceSearchSchema.parse(Object.fromEntries(url.searchParams.entries()));
         sendJson(res, 200, { sources: await store.listSources(userId, filters) });
@@ -709,7 +860,9 @@ export async function createApp(options: AppOptions) {
       if (
         error instanceof DuplicateObservationPhotoError ||
         error instanceof DuplicateObservationReferenceError ||
-        error instanceof DuplicateObservationPlanFindingLinkError
+        error instanceof DuplicateObservationPlanFindingLinkError ||
+        error instanceof DuplicateIncidentAttachmentError ||
+        error instanceof DuplicateIncidentLinkError
       ) {
         sendJson(res, 409, { error: error.message });
         return;
@@ -723,7 +876,10 @@ export async function createApp(options: AppOptions) {
         error.message === "Requirement status not found" ||
         error.message === "Safety plan not found" ||
         error.message === "Safety plan revision not found" ||
-        error.message === "Plan review not found"
+        error.message === "Plan review not found" ||
+        error.message === "Incident not found" ||
+        error.message === "Observation not found" ||
+        error.message === "Plan finding not found"
       )) {
         sendJson(res, 404, { error: error.message });
         return;
@@ -733,6 +889,8 @@ export async function createApp(options: AppOptions) {
         error.message === "Observation engagement must belong to the selected project" ||
         error.message === "Observation photos must use image sources" ||
         error.message === "Photo source must belong to the observation project" ||
+        error.message === "Incident engagement must belong to the selected project" ||
+        error.message === "Incident source must belong to the selected project" ||
         error.message === "Plan extraction failed" ||
         error.message === "At least one review source is required"
       )) {

@@ -10,6 +10,12 @@ import type {
   ObservationClassification,
   ObservationDetail,
   ObservationFollowUpStatus,
+  AffectedWorkDisposition,
+  IncidentCategory,
+  IncidentDetail,
+  IncidentOversightStatus,
+  IncidentRecord,
+  IncidentRecommendationType,
   Project,
   ProjectContractorEngagement,
   ProjectSourceLink,
@@ -80,6 +86,50 @@ const followUpOptions: Array<{ value: ObservationFollowUpStatus; label: string }
   { value: "none", label: "None" },
   { value: "needed", label: "Follow-up needed" },
   { value: "verified_closed", label: "Verified / closed" }
+];
+
+const incidentCategoryOptions: Array<{ value: IncidentCategory; label: string }> = [
+  { value: "injury_illness", label: "Injury / Illness" },
+  { value: "first_aid", label: "First Aid" },
+  { value: "recordable_reported_by_contractor", label: "Recordable reported by contractor" },
+  { value: "near_miss", label: "Near Miss" },
+  { value: "property_damage", label: "Property Damage" },
+  { value: "vehicle", label: "Vehicle" },
+  { value: "environmental", label: "Environmental" },
+  { value: "equipment_damage", label: "Equipment Damage" },
+  { value: "other", label: "Other" }
+];
+
+const incidentStatusOptions: Array<{ value: IncidentOversightStatus; label: string }> = [
+  { value: "received", label: "Received" },
+  { value: "under_project_review", label: "Under project review" },
+  { value: "awaiting_contractor_information", label: "Awaiting contractor information" },
+  { value: "follow_up_required", label: "Follow-up required" },
+  { value: "verification_pending", label: "Verification pending" },
+  { value: "closed", label: "Closed" }
+];
+
+const affectedWorkOptions: Array<{ value: AffectedWorkDisposition; label: string }> = [
+  { value: "no_restriction", label: "No restriction" },
+  { value: "additional_monitoring", label: "Additional monitoring" },
+  { value: "affected_activity_paused", label: "Affected activity paused" },
+  { value: "documentation_required", label: "Documentation required" },
+  { value: "plan_revision_required", label: "Plan revision required" },
+  { value: "management_review", label: "Management review" },
+  { value: "cleared_to_resume", label: "Cleared to resume" }
+];
+
+const recommendationTypeOptions: Array<{ value: IncidentRecommendationType; label: string }> = [
+  { value: "accept_contractor_actions", label: "Accept contractor actions" },
+  { value: "request_clarification", label: "Request clarification" },
+  { value: "request_additional_corrective_action", label: "Request additional corrective action" },
+  { value: "request_workforce_communication", label: "Request workforce communication" },
+  { value: "require_plan_revision", label: "Require plan revision" },
+  { value: "require_supporting_documentation", label: "Require supporting documentation" },
+  { value: "perform_field_verification", label: "Perform field verification" },
+  { value: "pause_affected_activity", label: "Pause affected activity" },
+  { value: "escalate_to_management", label: "Escalate to management" },
+  { value: "no_additional_project_action", label: "No additional project action" }
 ];
 
 const authorityOptions: Array<{ value: AuthorityClassification; label: string }> = [
@@ -194,6 +244,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [observations, setObservations] = useState<FieldObservation[]>([]);
   const [activeObservationId, setActiveObservationId] = useState<string | null>(null);
   const [activeObservation, setActiveObservation] = useState<ObservationDetail | null>(null);
+  const [incidents, setIncidents] = useState<IncidentRecord[]>([]);
+  const [activeIncidentId, setActiveIncidentId] = useState<string | null>(null);
+  const [activeIncident, setActiveIncident] = useState<IncidentDetail | null>(null);
   const [activeView, setActiveView] = useState<View>("workspace");
   const [status, setStatus] = useState("Loading records...");
   const [error, setError] = useState("");
@@ -279,6 +332,27 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     setActiveObservation(body.observation);
   }
 
+  async function reloadIncidents(projectId = selectedProjectId) {
+    if (!projectId) {
+      setIncidents([]);
+      setActiveIncidentId(null);
+      setActiveIncident(null);
+      return;
+    }
+    const body = await api<{ incidents: IncidentRecord[] }>(`/api/incidents?projectId=${projectId}`);
+    setIncidents(body.incidents);
+    setActiveIncidentId((current) => current ?? body.incidents[0]?.id ?? null);
+  }
+
+  async function reloadActiveIncident(incidentId = activeIncidentId) {
+    if (!incidentId) {
+      setActiveIncident(null);
+      return;
+    }
+    const body = await api<{ incident: IncidentDetail }>(`/api/incidents/${incidentId}`);
+    setActiveIncident(body.incident);
+  }
+
   async function reloadActivePlan(planId = activePlanId) {
     if (!planId) {
       setActivePlan(null);
@@ -330,6 +404,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setObservations([]);
       setActiveObservationId(null);
       setActiveObservation(null);
+      setIncidents([]);
+      setActiveIncidentId(null);
+      setActiveIncident(null);
       return;
     }
     api<{ engagements: ProjectContractorEngagement[] }>(`/api/projects/${selectedProjectId}/contractors`)
@@ -346,6 +423,9 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     );
     reloadObservations(selectedProjectId).catch((loadError) =>
       setError(loadError instanceof Error ? loadError.message : "Unable to load observations")
+    );
+    reloadIncidents(selectedProjectId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load incidents")
     );
   }, [selectedProjectId]);
 
@@ -379,6 +459,12 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
       setError(loadError instanceof Error ? loadError.message : "Unable to load observation")
     );
   }, [activeObservationId]);
+
+  useEffect(() => {
+    reloadActiveIncident(activeIncidentId).catch((loadError) =>
+      setError(loadError instanceof Error ? loadError.message : "Unable to load incident")
+    );
+  }, [activeIncidentId]);
 
   async function logout() {
     await api<void>("/api/auth/logout", { method: "POST" });
@@ -443,6 +529,7 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             summaries={readinessSummaries}
             activePlan={activePlan}
             activeObservation={activeObservation}
+            activeIncident={activeIncident}
           />
         </section>
 
@@ -513,6 +600,28 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
               if (observationId) {
                 setActiveObservationId(observationId);
                 await reloadActiveObservation(observationId);
+              }
+            }}
+          />
+          <IncidentOversightWorkbench
+            project={selectedProject}
+            engagements={engagements}
+            incidents={incidents}
+            observations={observations}
+            activeIncident={activeIncident}
+            activeIncidentId={activeIncidentId}
+            onOpenIncident={(id) => {
+              setActiveIncidentId(id);
+              setActiveObservationId(null);
+              setActivePlanId(null);
+              setActiveSourceId(null);
+              setActiveView("workspace");
+            }}
+            onChanged={async (incidentId) => {
+              await reloadIncidents(selectedProjectId);
+              if (incidentId) {
+                setActiveIncidentId(incidentId);
+                await reloadActiveIncident(incidentId);
               }
             }}
           />
@@ -632,7 +741,8 @@ function WorkspacePanel({
   readiness,
   summaries,
   activePlan,
-  activeObservation
+  activeObservation,
+  activeIncident
 }: {
   project: Project | null;
   engagements: ProjectContractorEngagement[];
@@ -642,6 +752,7 @@ function WorkspacePanel({
   summaries: ContractorReadinessSummary[];
   activePlan: SafetyPlanDetail | null;
   activeObservation: ObservationDetail | null;
+  activeIncident: IncidentDetail | null;
 }) {
   if (!project) {
     return <div className="empty-state"><h2>No project open</h2><p>Create or select a blank project from the left panel.</p></div>;
@@ -658,7 +769,9 @@ function WorkspacePanel({
       </div>
       <section className="foundation-grid">
         <div>
-          {activeObservation ? (
+          {activeIncident ? (
+            <IncidentOversightView detail={activeIncident} />
+          ) : activeObservation ? (
             <FieldObservationView detail={activeObservation} />
           ) : activePlan ? (
             <PlanReviewView detail={activePlan} />
@@ -736,6 +849,49 @@ function FieldObservationView({ detail }: { detail: ObservationDetail }) {
           ))}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function IncidentOversightView({ detail }: { detail: IncidentDetail }) {
+  return (
+    <section className="plan-review" aria-labelledby="incident-title">
+      <div className="project-heading compact-heading">
+        <div>
+          <p className="eyebrow">Incident oversight</p>
+          <h3 id="incident-title">{incidentCategoryLabel(detail.incidentCategory)}</h3>
+        </div>
+        <span>{incidentStatusLabel(detail.oversightStatus)}</span>
+      </div>
+      <div className="review-columns">
+        <article className="review-pane">
+          <p className="eyebrow">Contractor-provided information</p>
+          <h4>{detail.engagement?.contractor?.legalName ?? "Project / GC incident"}</h4>
+          <p>{detail.factualDescription}</p>
+          <p><strong>Contractor classification:</strong> {detail.contractorReportedClassification ?? "Not provided"}</p>
+          <p><strong>Investigation:</strong> {detail.contractorInvestigationStatus.replace(/_/g, " ")}</p>
+          <p>{detail.attachments.length} source attachment{detail.attachments.length === 1 ? "" : "s"}</p>
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">GC / project review</p>
+          <h4>{detail.activity ?? "Activity not specified"}</h4>
+          <p>{detail.projectReview?.reviewerAnalysis ?? "No project review entered."}</p>
+          <p><strong>Exposure:</strong> {detail.projectReview?.remainingExposure ?? "Not reviewed"}</p>
+          <p><strong>Affected work:</strong> {affectedWorkLabel(detail.affectedWorkDisposition)}</p>
+        </article>
+        <article className="review-pane">
+          <p className="eyebrow">Decisions / follow-up</p>
+          <h4>{detail.projectDecisions.length} decision{detail.projectDecisions.length === 1 ? "" : "s"}</h4>
+          <p>{detail.recommendations.length} recommendation{detail.recommendations.length === 1 ? "" : "s"} - {detail.followUps.length} follow-up record{detail.followUps.length === 1 ? "" : "s"}</p>
+          <p>{detail.aiSummary ?? "AI suggestions have not been run."}</p>
+          {detail.closureNote ? <p className="suggested-text">{detail.closureNote}</p> : null}
+        </article>
+      </div>
+      <div className="readiness-strip">
+        <span>{new Date(detail.incidentDateTime).toLocaleString()}</span>
+        <span>{detail.location ?? "Location not specified"}</span>
+        <span>{detail.auditEvents.length} audit event{detail.auditEvents.length === 1 ? "" : "s"}</span>
+      </div>
     </section>
   );
 }
@@ -1747,6 +1903,194 @@ function FieldOperationsWorkbench({
   );
 }
 
+function IncidentOversightWorkbench({
+  project,
+  engagements,
+  incidents,
+  observations,
+  activeIncident,
+  activeIncidentId,
+  onOpenIncident,
+  onChanged
+}: {
+  project: Project | null;
+  engagements: ProjectContractorEngagement[];
+  incidents: IncidentRecord[];
+  observations: FieldObservation[];
+  activeIncident: IncidentDetail | null;
+  activeIncidentId: string | null;
+  onOpenIncident: (id: string) => void;
+  onChanged: (incidentId?: string) => Promise<void>;
+}) {
+  const [engagementId, setEngagementId] = useState("");
+  const [description, setDescription] = useState("");
+  const [category, setCategory] = useState<IncidentCategory>("near_miss");
+  const [incidentDateTime, setIncidentDateTime] = useState(new Date().toISOString().slice(0, 16));
+  const [location, setLocation] = useState("");
+  const [activity, setActivity] = useState("");
+  const [reviewText, setReviewText] = useState("");
+  const [actionText, setActionText] = useState("");
+  const [recommendationType, setRecommendationType] = useState<IncidentRecommendationType>("request_clarification");
+  const [recommendationText, setRecommendationText] = useState("");
+  const [decisionText, setDecisionText] = useState("");
+  const [followUpText, setFollowUpText] = useState("");
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  async function run(action: () => Promise<void>, message: string) {
+    setError("");
+    setStatus(message);
+    try {
+      await action();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Incident operation failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  async function createIncident(event: FormEvent) {
+    event.preventDefault();
+    if (!project) return;
+    await run(async () => {
+      const created = await api<{ incident: IncidentDetail }>("/api/incidents", {
+        method: "POST",
+        body: JSON.stringify({
+          projectId: project.id,
+          engagementId,
+          incidentDateTime: new Date(incidentDateTime).toISOString(),
+          location,
+          activity,
+          factualDescription: description,
+          incidentCategory: category,
+          contractorInvestigationStatus: "unknown"
+        })
+      });
+      setDescription("");
+      await onChanged(created.incident.id);
+    }, "Creating incident...");
+  }
+
+  async function updateActive(input: Record<string, unknown>, message = "Updating incident...") {
+    if (!activeIncidentId) return;
+    await run(async () => {
+      await api<{ incident: IncidentDetail }>(`/api/incidents/${activeIncidentId}`, {
+        method: "PATCH",
+        body: JSON.stringify(input)
+      });
+      await onChanged(activeIncidentId);
+    }, message);
+  }
+
+  async function saveReview() {
+    if (!activeIncidentId) return;
+    await run(async () => {
+      await api<{ review: unknown }>(`/api/incidents/${activeIncidentId}/project-review`, {
+        method: "PUT",
+        body: JSON.stringify({ reviewerAnalysis: reviewText, remainingExposure: "Reviewer evaluation required.", managementReviewNeeded: false })
+      });
+      await onChanged(activeIncidentId);
+    }, "Saving project review...");
+  }
+
+  async function addAction() {
+    if (!activeIncidentId || !actionText.trim()) return;
+    await run(async () => {
+      await api<{ correctiveAction: unknown }>(`/api/incidents/${activeIncidentId}/contractor-corrective-actions`, {
+        method: "POST",
+        body: JSON.stringify({ description: actionText, contractorStatus: "provided" })
+      });
+      setActionText("");
+      await onChanged(activeIncidentId);
+    }, "Recording contractor action...");
+  }
+
+  async function addRecommendation() {
+    if (!activeIncidentId || !recommendationText.trim()) return;
+    await run(async () => {
+      await api<{ recommendation: unknown }>(`/api/incidents/${activeIncidentId}/recommendations`, {
+        method: "POST",
+        body: JSON.stringify({ recommendationType, recommendationText })
+      });
+      setRecommendationText("");
+      await onChanged(activeIncidentId);
+    }, "Adding recommendation...");
+  }
+
+  async function addDecision() {
+    if (!activeIncidentId || !decisionText.trim()) return;
+    await run(async () => {
+      await api<{ decision: unknown }>(`/api/incidents/${activeIncidentId}/project-decisions`, {
+        method: "POST",
+        body: JSON.stringify({ decisionText, appliesToScope: activeIncident?.affectedWorkScope ?? "", status: "active" })
+      });
+      setDecisionText("");
+      await onChanged(activeIncidentId);
+    }, "Creating project decision...");
+  }
+
+  async function addFollowUp() {
+    if (!activeIncidentId || !followUpText.trim()) return;
+    await run(async () => {
+      await api<{ followUp: unknown }>(`/api/incidents/${activeIncidentId}/follow-ups`, {
+        method: "POST",
+        body: JSON.stringify({ status: "verified", verificationNote: followUpText })
+      });
+      setFollowUpText("");
+      await onChanged(activeIncidentId);
+    }, "Recording follow-up...");
+  }
+
+  return (
+    <section className="workbench-section">
+      <h2>Incident oversight</h2>
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
+      {status ? <p className="banner muted">{status}</p> : null}
+      <form onSubmit={createIncident} className="stack compact">
+        <label htmlFor="incident-contractor">Contractor
+          <select id="incident-contractor" value={engagementId} onChange={(event) => setEngagementId(event.target.value)} disabled={!project}>
+            <option value="">Project / GC incident</option>
+            {engagements.map((engagement) => <option key={engagement.id} value={engagement.id}>{engagement.contractor?.legalName ?? engagement.contractorId}</option>)}
+          </select>
+        </label>
+        <label htmlFor="incident-date">Incident date/time<input id="incident-date" type="datetime-local" value={incidentDateTime} onChange={(event) => setIncidentDateTime(event.target.value)} /></label>
+        <label htmlFor="incident-category">Category<select id="incident-category" value={category} onChange={(event) => setCategory(event.target.value as IncidentCategory)}>{incidentCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label htmlFor="incident-location">Location<input id="incident-location" value={location} onChange={(event) => setLocation(event.target.value)} /></label>
+        <label htmlFor="incident-activity">Activity<input id="incident-activity" value={activity} onChange={(event) => setActivity(event.target.value)} /></label>
+        <label htmlFor="incident-description">Factual description<textarea id="incident-description" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+        <button className="primary" disabled={!project || !description.trim()}>Create incident</button>
+      </form>
+      <div className="stack compact">
+        <h3>Incident register</h3>
+        {incidents.map((incident) => (
+          <button key={incident.id} className={incident.id === activeIncidentId ? "row active" : "row"} type="button" onClick={() => onOpenIncident(incident.id)}>
+            <strong>{incident.engagement?.contractor?.legalName ?? "Project / GC incident"}</strong>
+            <span>{incidentCategoryLabel(incident.incidentCategory)} - {incidentStatusLabel(incident.oversightStatus)} - {affectedWorkLabel(incident.affectedWorkDisposition)}</span>
+          </button>
+        ))}
+      </div>
+      <div className="stack compact">
+        <h3>Project oversight</h3>
+        <label htmlFor="incident-disposition">Affected work<select id="incident-disposition" disabled={!activeIncidentId} onChange={(event) => updateActive({ affectedWorkDisposition: event.target.value }, "Updating affected work...").catch(() => undefined)}><option value="">Set disposition</option>{affectedWorkOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label htmlFor="incident-review">GC review<textarea id="incident-review" value={reviewText} onChange={(event) => setReviewText(event.target.value)} /></label>
+        <button className="secondary" type="button" disabled={!activeIncidentId} onClick={saveReview}>Save review</button>
+        <label htmlFor="contractor-action">Contractor corrective action<textarea id="contractor-action" value={actionText} onChange={(event) => setActionText(event.target.value)} /></label>
+        <button className="secondary" type="button" disabled={!activeIncidentId || !actionText.trim()} onClick={addAction}>Record contractor action</button>
+        <label htmlFor="incident-recommendation-type">Recommendation type<select id="incident-recommendation-type" value={recommendationType} onChange={(event) => setRecommendationType(event.target.value as IncidentRecommendationType)}>{recommendationTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        <label htmlFor="incident-recommendation">Recommendation<textarea id="incident-recommendation" value={recommendationText} onChange={(event) => setRecommendationText(event.target.value)} /></label>
+        <button className="secondary" type="button" disabled={!activeIncidentId || !recommendationText.trim()} onClick={addRecommendation}>Add recommendation</button>
+        <label htmlFor="incident-decision">Project decision<textarea id="incident-decision" value={decisionText} onChange={(event) => setDecisionText(event.target.value)} /></label>
+        <button className="secondary" type="button" disabled={!activeIncidentId || !decisionText.trim()} onClick={addDecision}>Create decision</button>
+        <label htmlFor="incident-follow-up">Follow-up verification<textarea id="incident-follow-up" value={followUpText} onChange={(event) => setFollowUpText(event.target.value)} /></label>
+        <button className="secondary" type="button" disabled={!activeIncidentId || !followUpText.trim()} onClick={addFollowUp}>Record follow-up</button>
+        <button className="secondary" type="button" disabled={!activeIncidentId} onClick={() => activeIncidentId && api<{ incident: IncidentDetail }>(`/api/incidents/${activeIncidentId}/ai-review-runs`, { method: "POST" }).then(() => onChanged(activeIncidentId)).catch((aiError) => setError(aiError instanceof Error ? aiError.message : "AI review failed"))}>Run AI suggestions</button>
+        <button className="primary" type="button" disabled={!activeIncidentId || activeIncident?.oversightStatus === "closed"} onClick={() => activeIncidentId && api<{ incident: IncidentDetail }>(`/api/incidents/${activeIncidentId}/close`, { method: "POST", body: JSON.stringify({ closureNote: "Project-level follow-up complete." }) }).then(() => onChanged(activeIncidentId)).catch((closeError) => setError(closeError instanceof Error ? closeError.message : "Close failed"))}>Close incident</button>
+        <button className="ghost" type="button" disabled={!activeIncidentId || activeIncident?.oversightStatus !== "closed"} onClick={() => activeIncidentId && api<{ incident: IncidentDetail }>(`/api/incidents/${activeIncidentId}/reopen`, { method: "POST", body: JSON.stringify({ reason: "New evidence or follow-up requires review." }) }).then(() => onChanged(activeIncidentId)).catch((reopenError) => setError(reopenError instanceof Error ? reopenError.message : "Reopen failed"))}>Reopen</button>
+      </div>
+    </section>
+  );
+}
+
 function authorityLabel(value: AuthorityClassification): string {
   return authorityOptions.find((option) => option.value === value)?.label ?? value;
 }
@@ -1781,6 +2125,18 @@ function observationLabel(value: ObservationClassification | null): string | nul
 
 function followUpLabel(value: ObservationFollowUpStatus): string {
   return followUpOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function incidentCategoryLabel(value: IncidentCategory): string {
+  return incidentCategoryOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function incidentStatusLabel(value: IncidentOversightStatus): string {
+  return incidentStatusOptions.find((option) => option.value === value)?.label ?? value;
+}
+
+function affectedWorkLabel(value: AffectedWorkDisposition): string {
+  return affectedWorkOptions.find((option) => option.value === value)?.label ?? value;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
