@@ -19,6 +19,25 @@ Authoritative product doctrine lives under `PROJECT-INTELLIGENCE/`. Root-level f
 3. Set a private `BOOTSTRAP_PASSWORD`.
 4. Run `npm.cmd run dev` on Windows PowerShell, or `npm run dev` in shells where npm scripts are enabled.
 
+### One-click Windows launch
+
+On Windows, run `tools\install-swa-shortcuts.ps1` once to create desktop shortcuts:
+
+- `SWA Local` starts the local launcher.
+- `Stop SWA Local` stops repo-owned SWA app processes on the local development ports.
+
+The launcher uses the existing `npm.cmd run dev` script, waits for the API health endpoint and Vite frontend, then opens `http://127.0.0.1:5173/` in the default browser.
+
+If `.env` is missing, the launcher creates an ignored local `.env` with generated private development credentials and a local Docker PostgreSQL URL. The configured bootstrap email is visible in `.env` as `BOOTSTRAP_EMAIL`; the password remains local in `.env` and must not be committed or pasted into logs.
+
+Local URLs:
+
+- Frontend: `http://127.0.0.1:5173/`
+- API health: `http://127.0.0.1:4174/api/health`
+- API base through Vite: `/api`, proxied to `http://127.0.0.1:4174`
+
+Local launcher logs are written under `.data/local-runtime/logs/`, which is ignored by Git.
+
 ## Verification Commands
 
 - `npm.cmd run typecheck`
