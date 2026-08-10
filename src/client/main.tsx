@@ -247,6 +247,7 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [projectSources, setProjectSources] = useState<ProjectSourceLink[]>([]);
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
   const [activeSource, setActiveSource] = useState<SourceDetail | null>(null);
+  const [selectedContextSourceIds, setSelectedContextSourceIds] = useState<string[]>([]);
   const [activeEngagementId, setActiveEngagementId] = useState<string | null>(null);
   const [readinessRequirements, setReadinessRequirements] = useState<ReadinessRequirement[]>([]);
   const [readinessSummaries, setReadinessSummaries] = useState<ContractorReadinessSummary[]>([]);
@@ -278,11 +279,29 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     () => engagements.find((engagement) => engagement.id === activeEngagementId) ?? null,
     [engagements, activeEngagementId]
   );
+  const visibleSourceIds = useMemo(() => new Set(sources.map((source) => source.id)), [sources]);
 
   async function loadSources(path = "/api/sources") {
     const body = await api<{ sources: SourceRecord[] }>(path);
     setSources(body.sources);
     return body.sources;
+  }
+
+  function toggleContextSource(sourceId: string, checked: boolean) {
+    setSelectedContextSourceIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(sourceId);
+      else next.delete(sourceId);
+      return [...next].filter((id) => visibleSourceIds.has(id) || id === sourceId);
+    });
+  }
+
+  function selectAllVisibleSources(sourceIds: string[]) {
+    setSelectedContextSourceIds((current) => [...new Set([...current, ...sourceIds])]);
+  }
+
+  function clearContextSources() {
+    setSelectedContextSourceIds([]);
   }
 
   async function reloadProjectSources(projectId = selectedProjectId) {
@@ -598,12 +617,24 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             sources={sources}
             projectSources={projectSources}
             activeSourceId={activeSourceId}
+            selectedSourceIds={selectedContextSourceIds}
+            currentProject={selectedProject}
             onOpen={(id) => {
               setActiveSourceId(id);
               setActiveView("workspace");
             }}
+            onToggleSelected={toggleContextSource}
+            onSelectAll={selectAllVisibleSources}
+            onClearSelection={clearContextSources}
             onSearch={async (query) => {
               await loadSources(query ? `/api/sources?q=${encodeURIComponent(query)}` : "/api/sources");
+            }}
+            onSourceAdded={async (sourceId) => {
+              await refreshSourceContext(sourceId);
+              if (sourceId) {
+                setActiveSourceId(sourceId);
+                setActiveView("workspace");
+              }
             }}
           />
         </aside>
@@ -626,6 +657,11 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             activeReport={activeReport}
             assistantDashboard={assistantDashboard}
             activeConversation={activeConversation}
+            selectedSourceCount={selectedContextSourceIds.length}
+            onCloseSource={() => {
+              setActiveSourceId(null);
+              setActiveSource(null);
+            }}
             onConversationChanged={async (conversationId) => {
               await reloadAssistant(selectedProjectId);
               if (conversationId) {
@@ -837,24 +873,48 @@ function ProjectPanel({
   );
 }
 
-function SourceNav({
+export function SourceNav({
   sources,
   projectSources,
   activeSourceId,
+  selectedSourceIds,
+  currentProject,
   onOpen,
-  onSearch
+  onToggleSelected,
+  onSelectAll,
+  onClearSelection,
+  onSearch,
+  onSourceAdded
 }: {
   sources: SourceRecord[];
   projectSources: ProjectSourceLink[];
   activeSourceId: string | null;
+  selectedSourceIds: string[];
+  currentProject: Project | null;
   onOpen: (id: string) => void;
+  onToggleSelected: (id: string, checked: boolean) => void;
+  onSelectAll: (ids: string[]) => void;
+  onClearSelection: () => void;
   onSearch: (query: string) => Promise<void>;
+  onSourceAdded: (sourceId?: string) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
+  const [authorityFilter, setAuthorityFilter] = useState<AuthorityClassification | "">("");
+  const [dialogOpen, setDialogOpen] = useState(false);
   const activeIds = new Set(projectSources.filter((link) => link.activationStatus === "active").map((link) => link.sourceId));
+  const associatedIds = new Set(projectSources.map((link) => link.sourceId));
+  const selectedIds = new Set(selectedSourceIds);
+  const filteredSources = sources.filter((source) => !authorityFilter || source.authorityClassification === authorityFilter);
+  const visibleSelectedCount = filteredSources.filter((source) => selectedIds.has(source.id)).length;
   return (
     <section className="source-nav" aria-labelledby="sources-title">
-      <h2 id="sources-title">Sources</h2>
+      <div className="source-nav-heading">
+        <div>
+          <h2 id="sources-title">Sources</h2>
+          <p className="empty">{currentProject ? currentProject.name : "Global library"} context</p>
+        </div>
+        <button className="primary add-source-button" type="button" onClick={() => setDialogOpen(true)}>+ Add sources</button>
+      </div>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -865,16 +925,153 @@ function SourceNav({
         <label htmlFor="source-search">Search library<input id="source-search" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
         <button className="secondary">Search sources</button>
       </form>
+      <div className="source-controls">
+        <label htmlFor="source-authority-filter">Filter
+          <select id="source-authority-filter" value={authorityFilter} onChange={(event) => setAuthorityFilter(event.target.value as AuthorityClassification | "")}>
+            <option value="">All source types</option>
+            {authorityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <div className="selection-summary" aria-live="polite">
+          <strong>{selectedSourceIds.length} of {sources.length}</strong>
+          <span>sources selected for current context</span>
+        </div>
+        <div className="source-selection-actions">
+          <button className="ghost" type="button" onClick={() => onSelectAll(filteredSources.map((source) => source.id))}>Select all</button>
+          <button className="ghost" type="button" onClick={onClearSelection}>Clear selection</button>
+        </div>
+      </div>
       <div className="list">
         {sources.length === 0 ? <p className="empty">No sources yet. Upload files or add a URL from the workbench.</p> : null}
-        {sources.map((source) => (
-          <button key={source.id} className={source.id === activeSourceId ? "row active" : "row"} onClick={() => onOpen(source.id)}>
-            <strong>{source.title}</strong>
-            <span>{source.scope} - {source.sourceType} - {source.processingStatus}{activeIds.has(source.id) ? " - active" : ""}</span>
-          </button>
+        {filteredSources.length === 0 && sources.length ? <p className="empty">No sources match the current filter.</p> : null}
+        {filteredSources.map((source) => (
+          <article key={source.id} className={source.id === activeSourceId ? "source-row active" : "source-row"}>
+            <label className="source-check" htmlFor={`source-context-${source.id}`}>
+              <input id={`source-context-${source.id}`} type="checkbox" checked={selectedIds.has(source.id)} onChange={(event) => onToggleSelected(source.id, event.target.checked)} />
+              <span className="sr-only">Select {source.title} for current context</span>
+            </label>
+            <button className="source-open" type="button" onClick={() => onOpen(source.id)}>
+              <strong>{source.title}</strong>
+              <span>{source.originalFilename ?? source.originalUrl ?? source.sourceType}</span>
+              <span>{authorityLabel(source.authorityClassification)} - {source.sourceType} - {source.processingStatus}</span>
+            </button>
+            <div className="source-state-strip" aria-label="Source states">
+              <span className={associatedIds.has(source.id) || source.scope === "project" ? "state-chip on" : "state-chip"}>associated</span>
+              <span className={activeIds.has(source.id) ? "state-chip authority" : "state-chip"}>authority</span>
+              <span className={selectedIds.has(source.id) ? "state-chip context" : "state-chip"}>context</span>
+            </div>
+          </article>
         ))}
       </div>
+      <p className="empty">{visibleSelectedCount} selected in current filtered view. Context selection does not activate project authority.</p>
+      {dialogOpen ? <AddSourcesDialog project={currentProject} onClose={() => setDialogOpen(false)} onSourceAdded={async (sourceId) => { await onSourceAdded(sourceId); setDialogOpen(false); }} /> : null}
     </section>
+  );
+}
+
+function AddSourcesDialog({
+  project,
+  onClose,
+  onSourceAdded
+}: {
+  project: Project | null;
+  onClose: () => void;
+  onSourceAdded: (sourceId?: string) => Promise<void>;
+}) {
+  const [scope, setScope] = useState<SourceScope>(project ? "project" : "global");
+  const [title, setTitle] = useState("");
+  const [authority, setAuthority] = useState<AuthorityClassification>("general_reference");
+  const [file, setFile] = useState<File | null>(null);
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+
+  async function upload(event: FormEvent) {
+    event.preventDefault();
+    if (!file) return;
+    setError("");
+    setStatus("Uploading and processing...");
+    try {
+      const form = new FormData();
+      form.set("title", title || file.name);
+      form.set("scope", scope);
+      if (scope === "project" && project) form.set("projectId", project.id);
+      form.set("authorityClassification", authority);
+      form.set("userConfirmedClassification", "true");
+      form.append("file", file, file.name);
+      const body = await api<{ sources: SourceRecord[] }>("/api/sources/upload", { method: "POST", body: form });
+      await onSourceAdded(body.sources[0]?.id);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Upload failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  async function addUrl(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setStatus("Retrieving URL...");
+    try {
+      const body = await api<{ source: SourceRecord }>("/api/sources/url", {
+        method: "POST",
+        body: JSON.stringify({
+          title: title || url,
+          scope,
+          projectId: scope === "project" && project ? project.id : "",
+          authorityClassification: authority,
+          userConfirmedClassification: true,
+          url
+        })
+      });
+      await onSourceAdded(body.source.id);
+    } catch (urlError) {
+      setError(urlError instanceof Error ? urlError.message : "URL intake failed");
+    } finally {
+      setStatus("");
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="add-sources-title">
+        <div className="project-heading">
+          <div>
+            <p className="eyebrow">Sources</p>
+            <h2 id="add-sources-title">Add sources</h2>
+          </div>
+          <button className="ghost" type="button" onClick={onClose}>Close</button>
+        </div>
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        {status ? <p className="banner muted">{status}</p> : null}
+        <div className="two-col">
+          <label htmlFor="dialog-source-title">Display title<input id="dialog-source-title" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+          <label htmlFor="dialog-source-scope">Scope
+            <select id="dialog-source-scope" value={scope} onChange={(event) => setScope(event.target.value as SourceScope)}>
+              <option value="global">Global library</option>
+              <option value="project" disabled={!project}>Current project</option>
+            </select>
+          </label>
+        </div>
+        <label htmlFor="dialog-source-authority">Authority classification
+          <select id="dialog-source-authority" value={authority} onChange={(event) => setAuthority(event.target.value as AuthorityClassification)}>
+            {authorityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <form onSubmit={upload} className="stack compact upload-zone source-drop">
+          <p className="eyebrow">Drop files here</p>
+          <p className="empty">PDF / DOCX / XLSX / PPTX / TXT / Markdown / CSV / Images</p>
+          <label htmlFor="dialog-source-file">Choose files<input id="dialog-source-file" type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
+          <button className="primary" disabled={!file}>Upload source</button>
+        </form>
+        <form onSubmit={addUrl} className="stack compact">
+          <p className="eyebrow">Website / URL</p>
+          <label htmlFor="dialog-source-url">URL<input id="dialog-source-url" value={url} onChange={(event) => setUrl(event.target.value)} type="url" /></label>
+          <button className="secondary" disabled={!url}>Add URL</button>
+        </form>
+        <p className="empty">Unavailable connectors are intentionally hidden. Adding a source does not make it controlling authority unless the project activation workflow marks it active.</p>
+      </section>
+    </div>
   );
 }
 
@@ -891,6 +1088,8 @@ function WorkspacePanel({
   activeReport,
   assistantDashboard,
   activeConversation,
+  selectedSourceCount,
+  onCloseSource,
   onConversationChanged
 }: {
   project: Project | null;
@@ -905,6 +1104,8 @@ function WorkspacePanel({
   activeReport: SafetyReportDetail | null;
   assistantDashboard: AssistantDashboard | null;
   activeConversation: AssistantConversationDetail | null;
+  selectedSourceCount: number;
+  onCloseSource: () => void;
   onConversationChanged: (conversationId?: string) => Promise<void>;
 }) {
   if (!project) {
@@ -920,10 +1121,12 @@ function WorkspacePanel({
         </div>
         <span>{project.location}</span>
       </div>
-      <AssistantConsole project={project} dashboard={assistantDashboard} activeConversation={activeConversation} onChanged={onConversationChanged} />
+      <AssistantConsole project={project} dashboard={assistantDashboard} activeConversation={activeConversation} selectedSourceCount={selectedSourceCount} onChanged={onConversationChanged} />
       <section className="foundation-grid">
         <div>
-          {activeReport ? (
+          {activeSource ? (
+            <SourceDetailView source={activeSource} onClose={onCloseSource} />
+          ) : activeReport ? (
             <SafetyReportView detail={activeReport} />
           ) : activeIncident ? (
             <IncidentOversightView detail={activeIncident} />
@@ -931,8 +1134,6 @@ function WorkspacePanel({
             <FieldObservationView detail={activeObservation} />
           ) : activePlan ? (
             <PlanReviewView detail={activePlan} />
-          ) : activeSource ? (
-            <SourceDetailView source={activeSource} />
           ) : (
             <>
               <h3>Source workspace</h3>
@@ -962,11 +1163,13 @@ function AssistantConsole({
   project,
   dashboard,
   activeConversation,
+  selectedSourceCount,
   onChanged
 }: {
   project: Project;
   dashboard: AssistantDashboard | null;
   activeConversation: AssistantConversationDetail | null;
+  selectedSourceCount: number;
   onChanged: (conversationId?: string) => Promise<void>;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -1017,6 +1220,7 @@ function AssistantConsole({
       <div className="context-strip">
         <span>Project: {project.name}</span>
         <span>Contractor: {context?.contractorId ?? "None"}</span>
+        <span>Sources: {selectedSourceCount} selected</span>
         <span>Skill: {dashboard?.skills.find((skill) => skill.id === context?.activeSkillId)?.name ?? "None"}</span>
       </div>
       <div className="starter-grid">
@@ -1291,31 +1495,51 @@ function ReadinessDetailView({ readiness }: { readiness: ContractorReadinessDeta
   );
 }
 
-function SourceDetailView({ source }: { source: SourceDetail }) {
+function SourceDetailView({ source, onClose }: { source: SourceDetail; onClose: () => void }) {
+  const activeProjectLinks = source.projectLinks.filter((link) => link.activationStatus === "active");
+  const associatedProjectLinks = source.projectLinks.filter((link) => link.activationStatus === "associated");
   return (
     <article className="source-detail">
-      <p className="eyebrow">{source.scope} source</p>
-      <h3>{source.title}</h3>
+      <div className="project-heading compact-heading">
+        <div>
+          <p className="eyebrow">Source Viewer</p>
+          <h3>{source.title}</h3>
+        </div>
+        <button className="ghost" type="button" onClick={onClose}>Close source</button>
+      </div>
       <dl className="metadata-grid">
+        <div><dt>Display title</dt><dd>{source.title}</dd></div>
+        <div><dt>Original</dt><dd>{source.originalFilename ?? source.originalUrl ?? "No original file"}</dd></div>
         <div><dt>Type</dt><dd>{source.sourceType}</dd></div>
+        <div><dt>Scope</dt><dd>{source.scope}</dd></div>
         <div><dt>Authority</dt><dd>{authorityLabel(source.authorityClassification)}</dd></div>
         <div><dt>Processing</dt><dd>{source.processingStatus}</dd></div>
         <div><dt>Extraction</dt><dd>{source.extractionStatus}</dd></div>
+        <div><dt>Project association</dt><dd>{source.projectLinks.length ? `${source.projectLinks.length} project link${source.projectLinks.length === 1 ? "" : "s"}` : "Not associated"}</dd></div>
+        <div><dt>Project authority</dt><dd>{activeProjectLinks.length ? `${activeProjectLinks.length} active link${activeProjectLinks.length === 1 ? "" : "s"}` : "Not active"}</dd></div>
       </dl>
       {source.failureReason ? <p className="form-error">{source.failureReason}</p> : null}
+      <div className="readiness-strip">
+        <span>Associated: {associatedProjectLinks.length + activeProjectLinks.length}</span>
+        <span>Active authority: {activeProjectLinks.length}</span>
+        <span>Chunks: {source.chunks.length}</span>
+      </div>
       <p className="empty">
         Original: {source.originalFilename ?? source.originalUrl ?? "No original file"} {source.storageKey ? <a href={`/api/sources/${source.id}/original`}>Download</a> : null}
       </p>
-      <h4>Citation chunks</h4>
-      {source.chunks.length === 0 ? <p className="empty">No extracted text chunks are available for this source.</p> : null}
-      <div className="chunk-list">
-        {source.chunks.map((chunk) => (
-          <section className="chunk" key={chunk.id}>
-            <strong>{chunk.locationLabel ?? `Chunk ${chunk.chunkIndex + 1}`}</strong>
-            <p>{chunk.text}</p>
-          </section>
-        ))}
-      </div>
+      <details className="extracted-content">
+        <summary>Extracted content</summary>
+        <p className="empty">Current citation navigation is honest chunk-level navigation. Source Intelligence Quality will improve semantic sections and extraction quality later.</p>
+        {source.chunks.length === 0 ? <p className="empty">No extracted text chunks are available for this source.</p> : null}
+        <div className="chunk-list">
+          {source.chunks.map((chunk) => (
+            <section className="chunk" id={`source-chunk-${chunk.id}`} key={chunk.id}>
+              <strong>{chunk.locationLabel ?? `Chunk ${chunk.chunkIndex + 1}`}</strong>
+              <p>{chunk.text}</p>
+            </section>
+          ))}
+        </div>
+      </details>
     </article>
   );
 }
@@ -1333,66 +1557,10 @@ function SourceWorkbench({
   activeSource: SourceDetail | null;
   onChanged: (sourceId?: string) => Promise<void>;
 }) {
-  const [scope, setScope] = useState<SourceScope>("global");
-  const [title, setTitle] = useState("");
   const [authority, setAuthority] = useState<AuthorityClassification>("general_reference");
-  const [file, setFile] = useState<File | null>(null);
-  const [url, setUrl] = useState("");
   const [sourceToAssociate, setSourceToAssociate] = useState("");
   const [error, setError] = useState("");
-  const [status, setStatus] = useState("");
   const projectSourceIds = new Set(projectSources.map((link) => link.sourceId));
-
-  async function upload(event: FormEvent) {
-    event.preventDefault();
-    if (!file) return;
-    setError("");
-    setStatus("Uploading and processing...");
-    try {
-      const form = new FormData();
-      form.set("title", title || file.name);
-      form.set("scope", scope);
-      if (scope === "project" && project) form.set("projectId", project.id);
-      form.set("authorityClassification", authority);
-      form.set("userConfirmedClassification", "true");
-      form.append("file", file, file.name);
-      const body = await api<{ sources: SourceRecord[] }>("/api/sources/upload", { method: "POST", body: form });
-      setTitle("");
-      setFile(null);
-      setStatus("Source processed.");
-      await onChanged(body.sources[0]?.id);
-    } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Upload failed");
-    } finally {
-      setStatus("");
-    }
-  }
-
-  async function addUrl(event: FormEvent) {
-    event.preventDefault();
-    setError("");
-    setStatus("Retrieving URL...");
-    try {
-      const body = await api<{ source: SourceRecord }>("/api/sources/url", {
-        method: "POST",
-        body: JSON.stringify({
-          title: title || url,
-          scope,
-          projectId: scope === "project" && project ? project.id : "",
-          authorityClassification: authority,
-          userConfirmedClassification: true,
-          url
-        })
-      });
-      setTitle("");
-      setUrl("");
-      await onChanged(body.source.id);
-    } catch (urlError) {
-      setError(urlError instanceof Error ? urlError.message : "URL intake failed");
-    } finally {
-      setStatus("");
-    }
-  }
 
   async function associate() {
     if (!project || !sourceToAssociate) return;
@@ -1423,31 +1591,9 @@ function SourceWorkbench({
 
   return (
     <section className="workbench-section">
-      <h2>Source intake</h2>
+      <h2>Source controls</h2>
       {error ? <p className="form-error" role="alert">{error}</p> : null}
-      {status ? <p className="banner muted">{status}</p> : null}
-      <form onSubmit={upload} className="stack compact upload-zone">
-        <label htmlFor="source-title">Source title<input id="source-title" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
-        <label htmlFor="source-scope">
-          Scope
-          <select id="source-scope" value={scope} onChange={(event) => setScope(event.target.value as SourceScope)}>
-            <option value="global">Global library</option>
-            <option value="project" disabled={!project}>Current project</option>
-          </select>
-        </label>
-        <label htmlFor="source-authority">
-          Classification
-          <select id="source-authority" value={authority} onChange={(event) => setAuthority(event.target.value as AuthorityClassification)}>
-            {authorityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </label>
-        <label htmlFor="source-file">Upload file<input id="source-file" type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
-        <button className="primary" disabled={!file}>Upload source</button>
-      </form>
-      <form onSubmit={addUrl} className="stack compact">
-        <label htmlFor="source-url">URL source<input id="source-url" value={url} onChange={(event) => setUrl(event.target.value)} type="url" /></label>
-        <button className="secondary" disabled={!url}>Add URL</button>
-      </form>
+      <p className="empty">Use + Add sources in the Sources panel for file and URL intake. These controls preserve separate project association and project authority states.</p>
       <div className="stack compact">
         <label htmlFor="associate-source">
           Associate global source
@@ -2770,4 +2916,5 @@ function reportFormatLabel(value: ReportFormat): string {
   return value === "structured" ? "Structured" : "Narrative";
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const rootElement = document.getElementById("root");
+if (rootElement) createRoot(rootElement).render(<App />);

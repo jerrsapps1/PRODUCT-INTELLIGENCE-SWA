@@ -23,6 +23,7 @@ Status date: 2026-08-09
 - The assistant-intelligence model preserves conversations, messages, retrieval manifests, memory, instructions, skills, assistant runs, and proposed actions separately from evidence and authoritative operational records.
 - Phase 8 assistant capability is classified as **B - Deterministic Structured Assistant**: credible bounded local orchestration, not an external conversational provider.
 - UI refinement doctrine for the NotebookLM-inspired Sources / Assistant / Workbench workspace is recorded under `PROJECT-INTELLIGENCE/ui/`; this is presentation/navigation refinement only and does not begin Phase 9.
+- Sources workflow refinement now uses a compact selectable Sources panel, bounded `+ Add sources` dialog, selected-source context count, and focused Source Viewer while keeping project association, project authority/activation, and current context selection separate.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1
