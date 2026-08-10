@@ -24,6 +24,7 @@ Status date: 2026-08-09
 - Phase 8 assistant capability is classified as **B - Deterministic Structured Assistant**: credible bounded local orchestration, not an external conversational provider.
 - UI refinement doctrine for the NotebookLM-inspired Sources / Assistant / Workbench workspace is recorded under `PROJECT-INTELLIGENCE/ui/`; this is presentation/navigation refinement only and does not begin Phase 9.
 - Sources workflow refinement now uses a compact selectable Sources panel, bounded `+ Add sources` dialog, selected-source context count, and focused Source Viewer while keeping project association, project authority/activation, and current context selection separate.
+- Desktop workspace panel resizing is implemented as browser-local presentation state: Sources and Workbench widths can be adjusted with accessible dividers while Assistant remains the primary remaining workspace and tablet behavior remains unchanged.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { SourceNav } from "./main";
+import { SourceNav, constrainWorkspacePanelWidths } from "./main";
 import type { Project, ProjectSourceLink, SourceRecord } from "../shared/contracts";
 
 function EmptyWorkspaceState() {
@@ -13,6 +13,11 @@ function EmptyWorkspaceState() {
 }
 
 describe("foundation UI states", () => {
+  it("keeps resizable desktop panels within workspace constraints", () => {
+    expect(constrainWorkspacePanelWidths({ sources: 900, workbench: 900 }, 1366)).toEqual({ sources: 520, workbench: 362 });
+    expect(constrainWorkspacePanelWidths({ sources: 100, workbench: 100 }, 1366)).toEqual({ sources: 270, workbench: 300 });
+  });
+
   it("renders an intentional empty project state", () => {
     render(<EmptyWorkspaceState />);
     expect(screen.getByText("No project open")).toBeInTheDocument();

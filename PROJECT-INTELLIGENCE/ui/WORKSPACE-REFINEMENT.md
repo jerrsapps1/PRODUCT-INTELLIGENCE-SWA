@@ -48,3 +48,17 @@ The Sources & Context panel should follow a NotebookLM-style source workflow whi
 - Citation navigation is limited to honest chunk-level source viewer anchors until a later Source Intelligence Quality pass improves extraction and semantic sectioning.
 
 Implemented: Pass 1 follow-up moved file/URL source intake into the Sources dialog, added source selection with select-all/clear, added selected-source count to Assistant context, and made extracted chunks progressively disclosed in the Source Viewer. Source storage, extraction, activation, provenance, and Phase 1-8 behavior remain unchanged.
+
+## Desktop Panel Resizing Amendment
+
+The desktop workspace may provide user-resizable Sources and Workbench panel widths while keeping the Assistant as the primary center workspace.
+
+- The Sources/Assistant and Assistant/Workbench dividers may be dragged like professional workspace panes.
+- Resizing only changes browser-local presentation state and must not create authoritative project/application data.
+- The Assistant consumes remaining available width and retains a sensible minimum so side panels cannot consume the whole workspace.
+- Sources and Workbench keep independent minimum/maximum constraints.
+- The default layout should preserve the approved three-panel proportions when no local preference exists.
+- A low-noise reset affordance, such as double-clicking a divider, may restore defaults.
+- Tablet and narrow layouts retain the approved tabbed/stacked behavior and should not expose desktop drag handles.
+
+Implemented: The desktop shell stores Sources and Workbench widths in browser `localStorage`, provides draggable and keyboard-accessible vertical dividers, double-click reset, constrained side widths, and keeps responsive tablet behavior unchanged. This is presentation-only state and does not begin Phase 9.

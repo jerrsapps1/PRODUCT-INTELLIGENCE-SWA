@@ -1,5 +1,6 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import type { CSSProperties } from "react";
 import type {
   AuthorityClassification,
   Contractor,
@@ -48,6 +49,54 @@ import type {
 import "./styles.css";
 
 type View = "sources" | "workspace" | "workbench";
+type PanelSide = "sources" | "workbench";
+type PanelWidths = { sources: number; workbench: number };
+
+const defaultPanelWidths: PanelWidths = { sources: 320, workbench: 380 };
+const panelWidthStorageKey = "swa.workspace.panelWidths";
+const panelResizeStep = 24;
+const panelResizeHandleWidth = 12;
+const panelWidthConstraints = {
+  sourcesMin: 270,
+  sourcesMax: 520,
+  assistantMin: 460,
+  workbenchMin: 300,
+  workbenchMax: 560
+};
+
+export function constrainWorkspacePanelWidths(widths: PanelWidths, availableWidth = 1366): PanelWidths {
+  const usableWidth = Math.max(0, availableWidth - panelResizeHandleWidth * 2);
+  const sourcesMax = Math.min(
+    panelWidthConstraints.sourcesMax,
+    usableWidth - panelWidthConstraints.assistantMin - panelWidthConstraints.workbenchMin
+  );
+  const sources = clamp(widths.sources, panelWidthConstraints.sourcesMin, Math.max(panelWidthConstraints.sourcesMin, sourcesMax));
+  const workbenchMax = Math.min(
+    panelWidthConstraints.workbenchMax,
+    usableWidth - panelWidthConstraints.assistantMin - sources
+  );
+  const workbench = clamp(widths.workbench, panelWidthConstraints.workbenchMin, Math.max(panelWidthConstraints.workbenchMin, workbenchMax));
+  return { sources, workbench };
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function readStoredPanelWidths(): PanelWidths {
+  if (typeof window === "undefined") return defaultPanelWidths;
+  const stored = window.localStorage.getItem(panelWidthStorageKey);
+  if (!stored) return defaultPanelWidths;
+  try {
+    const parsed = JSON.parse(stored) as Partial<PanelWidths>;
+    if (typeof parsed.sources === "number" && typeof parsed.workbench === "number") {
+      return constrainWorkspacePanelWidths({ sources: parsed.sources, workbench: parsed.workbench }, window.innerWidth);
+    }
+  } catch {
+    return defaultPanelWidths;
+  }
+  return defaultPanelWidths;
+}
 
 const readinessStatusOptions: Array<{ value: ReadinessStatus; label: string }> = [
   { value: "required", label: "Required" },
@@ -239,6 +288,7 @@ function LoginScreen({
 }
 
 function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => void }) {
+  const workspaceGridRef = useRef<HTMLElement | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [contractors, setContractors] = useState<Contractor[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -268,6 +318,7 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<AssistantConversationDetail | null>(null);
   const [activeView, setActiveView] = useState<View>("workspace");
+  const [panelWidths, setPanelWidths] = useState<PanelWidths>(readStoredPanelWidths);
   const [status, setStatus] = useState("Loading records...");
   const [error, setError] = useState("");
 
@@ -280,6 +331,78 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     [engagements, activeEngagementId]
   );
   const visibleSourceIds = useMemo(() => new Set(sources.map((source) => source.id)), [sources]);
+  const workspaceGridStyle = {
+    "--sources-panel-width": `${panelWidths.sources}px`,
+    "--workbench-panel-width": `${panelWidths.workbench}px`
+  } as CSSProperties;
+
+  function updatePanelWidths(next: PanelWidths) {
+    const availableWidth = workspaceGridRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+    const constrained = constrainWorkspacePanelWidths(next, availableWidth);
+    setPanelWidths(constrained);
+    window.localStorage.setItem(panelWidthStorageKey, JSON.stringify(constrained));
+  }
+
+  function resetPanelWidths() {
+    updatePanelWidths(defaultPanelWidths);
+  }
+
+  function resizePanel(side: PanelSide, nextWidth: number) {
+    updatePanelWidths({ ...panelWidths, [side]: nextWidth });
+  }
+
+  function nudgePanel(side: PanelSide, delta: number) {
+    resizePanel(side, panelWidths[side] + delta);
+  }
+
+  function startPanelResize(side: PanelSide, event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const grid = workspaceGridRef.current;
+    if (!grid) return;
+    const bounds = grid.getBoundingClientRect();
+    const startingWidths = panelWidths;
+    const pointerId = event.pointerId;
+    event.currentTarget.setPointerCapture(pointerId);
+
+    function resizeAt(clientX: number) {
+      if (side === "sources") {
+        resizePanel("sources", clientX - bounds.left);
+      } else {
+        resizePanel("workbench", bounds.right - clientX);
+      }
+    }
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      resizeAt(moveEvent.clientX);
+    }
+
+    function handlePointerUp() {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      document.body.classList.remove("is-resizing-panels");
+    }
+
+    setPanelWidths(startingWidths);
+    document.body.classList.add("is-resizing-panels");
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+  }
+
+  function handlePanelResizeKey(side: PanelSide, event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      resetPanelWidths();
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      nudgePanel(side, side === "sources" ? -panelResizeStep : panelResizeStep);
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      nudgePanel(side, side === "sources" ? panelResizeStep : -panelResizeStep);
+    }
+  }
 
   async function loadSources(path = "/api/sources") {
     const body = await api<{ sources: SourceRecord[] }>(path);
@@ -594,7 +717,7 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
         <button className={activeView === "workbench" ? "active" : ""} onClick={() => setActiveView("workbench")}>Workbench</button>
       </nav>
 
-      <section className="workspace-grid">
+      <section className="workspace-grid" ref={workspaceGridRef} style={workspaceGridStyle}>
         <aside className={`panel left ${activeView === "sources" ? "show" : ""}`}>
           <div className="panel-title">
             <p className="eyebrow">Sources</p>
@@ -639,6 +762,16 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
           />
         </aside>
 
+        <PanelResizer
+          side="sources"
+          value={panelWidths.sources}
+          min={panelWidthConstraints.sourcesMin}
+          max={panelWidthConstraints.sourcesMax}
+          onPointerDown={startPanelResize}
+          onKeyDown={handlePanelResizeKey}
+          onReset={resetPanelWidths}
+        />
+
         <section className={`panel center ${activeView === "workspace" ? "show" : ""}`}>
           <div className="panel-title">
             <p className="eyebrow">Assistant</p>
@@ -671,6 +804,16 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
             }}
           />
         </section>
+
+        <PanelResizer
+          side="workbench"
+          value={panelWidths.workbench}
+          min={panelWidthConstraints.workbenchMin}
+          max={panelWidthConstraints.workbenchMax}
+          onPointerDown={startPanelResize}
+          onKeyDown={handlePanelResizeKey}
+          onReset={resetPanelWidths}
+        />
 
         <aside className={`panel right ${activeView === "workbench" ? "show" : ""}`}>
           <div className="panel-title">
@@ -809,6 +952,42 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
         </aside>
       </section>
     </main>
+  );
+}
+
+function PanelResizer({
+  side,
+  value,
+  min,
+  max,
+  onPointerDown,
+  onKeyDown,
+  onReset
+}: {
+  side: PanelSide;
+  value: number;
+  min: number;
+  max: number;
+  onPointerDown: (side: PanelSide, event: React.PointerEvent<HTMLButtonElement>) => void;
+  onKeyDown: (side: PanelSide, event: React.KeyboardEvent<HTMLButtonElement>) => void;
+  onReset: () => void;
+}) {
+  const label = side === "sources" ? "Resize Sources panel" : "Resize Workbench panel";
+  return (
+    <button
+      type="button"
+      className={`panel-resizer ${side}`}
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemax={max}
+      aria-valuemin={min}
+      aria-valuenow={Math.round(value)}
+      onDoubleClick={onReset}
+      onKeyDown={(event) => onKeyDown(side, event)}
+      onPointerDown={(event) => onPointerDown(side, event)}
+      role="separator"
+      title="Drag to resize. Double-click to reset layout."
+    />
   );
 }
 
