@@ -62,3 +62,20 @@ The desktop workspace may provide user-resizable Sources and Workbench panel wid
 - Tablet and narrow layouts retain the approved tabbed/stacked behavior and should not expose desktop drag handles.
 
 Implemented: The desktop shell stores Sources and Workbench widths in browser `localStorage`, provides draggable and keyboard-accessible vertical dividers, double-click reset, constrained side widths, and keeps responsive tablet behavior unchanged. This is presentation-only state and does not begin Phase 9.
+
+## Sources Capability Amendment
+
+The Sources workflow should support operational reuse and organization without changing source authority doctrine or extraction quality.
+
+- Global Library sources are reusable records that may be associated with multiple projects without duplicating originals or extracted chunks.
+- Project association, project authority/activation, and current-context selection remain distinct states.
+- The `+ Add sources` experience may expose three clear paths: upload new, add URL, and choose existing Global Library sources.
+- Removing from current context only deselects a source for the current assistant context.
+- Removing from project only deletes the project-source link and never deletes the underlying source record.
+- Deleting from the library is an explicit destructive action that must be blocked or safely archived when the source is referenced by projects or operational records.
+- User tags/groups are lightweight organization metadata and never replace controlled authority classification.
+- Deterministic metadata-based tag suggestions may be offered when no external provider is configured; suggested tags remain editable and must not activate authority.
+- Source summaries are derived content, not evidence. Summary generation must honestly report unavailable provider status rather than fabricate summaries.
+- Display title is user-editable metadata; original filename/URL remains immutable provenance.
+
+Implemented: Sources now support Global Library reuse from the Add Sources dialog, user tags/groups, deterministic tag suggestions, editable display titles, safe project unlinking, explicit guarded library archival, and a richer center Source Viewer with provenance, summary status, tags, and extracted content. Document parsing/extraction algorithms and citation chunking remain unchanged.

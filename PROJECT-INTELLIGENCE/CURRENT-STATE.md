@@ -25,6 +25,7 @@ Status date: 2026-08-09
 - UI refinement doctrine for the NotebookLM-inspired Sources / Assistant / Workbench workspace is recorded under `PROJECT-INTELLIGENCE/ui/`; this is presentation/navigation refinement only and does not begin Phase 9.
 - Sources workflow refinement now uses a compact selectable Sources panel, bounded `+ Add sources` dialog, selected-source context count, and focused Source Viewer while keeping project association, project authority/activation, and current context selection separate.
 - Desktop workspace panel resizing is implemented as browser-local presentation state: Sources and Workbench widths can be adjusted with accessible dividers while Assistant remains the primary remaining workspace and tablet behavior remains unchanged.
+- Sources capability refinement adds Global Library reuse from the Add Sources dialog, lightweight user tags/groups, deterministic metadata-based tag suggestions, editable display titles, source-summary status tracking, guarded library archival, and richer Source Viewer use of the center workspace. Source parsing/extraction algorithms remain unchanged.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1

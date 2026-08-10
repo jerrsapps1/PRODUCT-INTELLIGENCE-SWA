@@ -50,6 +50,7 @@ describe("foundation UI states", () => {
         onToggleSelected={onToggleSelected}
         onSelectAll={onSelectAll}
         onClearSelection={onClearSelection}
+        onRemoveFromContext={vi.fn()}
         onSearch={vi.fn()}
         onSourceAdded={vi.fn()}
       />
@@ -85,6 +86,7 @@ describe("foundation UI states", () => {
         onToggleSelected={vi.fn()}
         onSelectAll={vi.fn()}
         onClearSelection={vi.fn()}
+        onRemoveFromContext={vi.fn()}
         onSearch={vi.fn()}
         onSourceAdded={vi.fn()}
       />
@@ -92,10 +94,39 @@ describe("foundation UI states", () => {
 
     fireEvent.click(screen.getByText("+ Add sources"));
     expect(screen.getByRole("dialog", { name: "Add sources" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload new" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add URL" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Choose from Global Library" })).toBeInTheDocument();
     expect(screen.getByText("PDF / DOCX / XLSX / PPTX / TXT / Markdown / CSV / Images")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Close"));
     expect(screen.queryByRole("dialog", { name: "Add sources" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Global Library reuse workflow in Add Sources", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ sources: [] }), { status: 200, headers: { "content-type": "application/json" } })));
+    render(
+      <SourceNav
+        sources={[]}
+        projectSources={[]}
+        activeSourceId={null}
+        selectedSourceIds={[]}
+        currentProject={project()}
+        onOpen={vi.fn()}
+        onToggleSelected={vi.fn()}
+        onSelectAll={vi.fn()}
+        onClearSelection={vi.fn()}
+        onRemoveFromContext={vi.fn()}
+        onSearch={vi.fn()}
+        onSourceAdded={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText("+ Add sources"));
+    fireEvent.click(screen.getByText("Choose from Global Library"));
+    expect(await screen.findByRole("button", { name: "Search library" })).toBeInTheDocument();
+    expect(screen.getByText("Associate selected sources")).toBeDisabled();
+    vi.unstubAllGlobals();
   });
 });
 
@@ -120,6 +151,13 @@ function source(id: string, title: string, originalFilename: string | null, auth
     extractionVersion: "test",
     failureReason: null,
     metadata: {},
+    tags: [],
+    summary: null,
+    summaryStatus: "not_generated",
+    summaryGeneratedAt: null,
+    summaryProvider: null,
+    summaryModel: null,
+    archivedAt: null,
     uploadedAt: "2026-08-09T00:00:00.000Z",
     createdAt: "2026-08-09T00:00:00.000Z",
     updatedAt: "2026-08-09T00:00:00.000Z"

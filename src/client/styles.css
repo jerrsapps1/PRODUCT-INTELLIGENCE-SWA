@@ -155,6 +155,11 @@ h4 {
   font-weight: 800;
 }
 
+.destructive {
+  border-color: rgba(248, 113, 113, 0.42);
+  color: #fecaca;
+}
+
 .primary:disabled,
 .secondary:disabled,
 .ghost:disabled,
@@ -417,6 +422,82 @@ button:disabled {
 .state-chip.context {
   border-color: #38bdf8;
   color: #bae6fd;
+}
+
+.chip-action {
+  min-height: 26px;
+  padding: 0.2rem 0.48rem;
+  border: 1px solid #36779b;
+  border-radius: 999px;
+  background: rgba(14, 44, 64, 0.62);
+  color: #bae6fd;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.segmented-control,
+.source-action-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.segmented-control button {
+  border: 1px solid #253544;
+  background: #0d1722;
+  color: #b9d7e8;
+  font-weight: 800;
+}
+
+.segmented-control .active {
+  border-color: #38bdf8;
+  background: #132638;
+  color: #e8f7ff;
+}
+
+.source-action-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.source-library-picker {
+  display: grid;
+  gap: 0.45rem;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(90px, auto);
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem;
+  border: 1px solid #253544;
+  border-radius: 8px;
+  background: #0b121b;
+}
+
+.picker-row input {
+  width: 20px;
+  min-height: 20px;
+  accent-color: #38bdf8;
+}
+
+.picker-row span {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.picker-row small,
+.picker-row em {
+  color: #8e9dab;
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+
+.muted-row {
+  opacity: 0.66;
 }
 
 .dialog-backdrop {
@@ -919,6 +1000,12 @@ a {
   }
 
   .assistant-composer {
+    grid-template-columns: 1fr;
+  }
+
+  .segmented-control,
+  .source-action-row,
+  .picker-row {
     grid-template-columns: 1fr;
   }
 }

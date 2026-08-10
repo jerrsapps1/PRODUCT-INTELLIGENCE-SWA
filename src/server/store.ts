@@ -19,6 +19,8 @@ import type {
   SourceDetail,
   SourceRecord,
   SourceSearchInput,
+  SourceSummaryGenerateInput,
+  SourceTagSuggestionInput,
   SourceUpdateInput,
   ReadinessAuditEvent,
   ReadinessEvidence,
@@ -151,6 +153,9 @@ export interface AppStore {
     input: Pick<SourceRecord, "processingStatus" | "extractionStatus" | "extractionVersion" | "failureReason" | "metadata">
   ): Promise<SourceRecord>;
   updateSource(userId: string, sourceId: string, input: SourceUpdateInput): Promise<SourceRecord | null>;
+  suggestSourceTags(userId: string, sourceId: string, input: SourceTagSuggestionInput): Promise<SourceRecord | null>;
+  generateSourceSummary(userId: string, sourceId: string, input: SourceSummaryGenerateInput): Promise<SourceRecord | null>;
+  archiveSource(userId: string, sourceId: string): Promise<SourceRecord | null>;
   getSource(userId: string, sourceId: string): Promise<SourceDetail | null>;
   addSourceChunks(userId: string, sourceId: string, chunks: SourceChunk[]): Promise<void>;
   associateSourceToProject(userId: string, projectId: string, input: ProjectSourceInput): Promise<ProjectSourceLink>;
@@ -256,6 +261,12 @@ export class DuplicateEngagementError extends Error {
 export class DuplicateProjectSourceError extends Error {
   constructor() {
     super("Source is already associated with this project");
+  }
+}
+
+export class SourceInUseError extends Error {
+  constructor() {
+    super("Source cannot be deleted because it is still referenced by projects or operational records");
   }
 }
 

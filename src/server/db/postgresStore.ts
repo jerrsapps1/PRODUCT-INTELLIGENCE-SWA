@@ -124,6 +124,8 @@ import type {
   SourceDetail,
   SourceRecord,
   SourceSearchInput,
+  SourceSummaryGenerateInput,
+  SourceTagSuggestionInput,
   SourceUpdateInput
 } from "../../shared/contracts";
 import {
@@ -137,9 +139,11 @@ import {
   DuplicatePlanRevisionSourceError,
   DuplicateProjectSourceError,
   DuplicateRequirementApplicationError,
+  SourceInUseError,
   type AppStore,
   type StoredUser
 } from "../store";
+import { suggestTagsForSource } from "../sourceOrganization";
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
 import { runIncidentAssistant } from "../incidentAssistant";
@@ -228,10 +232,25 @@ CREATE TABLE IF NOT EXISTS sources (
   extraction_version text,
   failure_reason text,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  tags text[] NOT NULL DEFAULT '{}'::text[],
+  summary text,
+  summary_status text NOT NULL DEFAULT 'not_generated' CHECK (summary_status IN ('not_generated', 'generating', 'ready', 'failed', 'unavailable')),
+  summary_generated_at timestamptz,
+  summary_provider text,
+  summary_model text,
+  archived_at timestamptz,
   uploaded_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}'::text[];
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS summary text;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS summary_status text NOT NULL DEFAULT 'not_generated';
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS summary_generated_at timestamptz;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS summary_provider text;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS summary_model text;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS archived_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS source_chunks (
   id uuid PRIMARY KEY,
@@ -256,6 +275,8 @@ CREATE TABLE IF NOT EXISTS project_sources (
 
 CREATE INDEX IF NOT EXISTS idx_sources_owner_user_id ON sources(owner_user_id);
 CREATE INDEX IF NOT EXISTS idx_sources_project_id ON sources(project_id);
+CREATE INDEX IF NOT EXISTS idx_sources_tags ON sources USING gin (tags);
+CREATE INDEX IF NOT EXISTS idx_sources_archived_at ON sources(archived_at);
 CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id ON source_chunks(source_id);
 CREATE INDEX IF NOT EXISTS idx_source_chunks_text ON source_chunks USING gin (to_tsvector('english', text));
 CREATE INDEX IF NOT EXISTS idx_project_sources_project_id ON project_sources(project_id);
@@ -1010,6 +1031,13 @@ function mapSource(row: Record<string, unknown>): SourceRecord {
     extractionVersion: row.extraction_version ? String(row.extraction_version) : null,
     failureReason: row.failure_reason ? String(row.failure_reason) : null,
     metadata: (row.metadata as Record<string, unknown>) ?? {},
+    tags: Array.isArray(row.tags) ? (row.tags as unknown[]).map(String) : [],
+    summary: row.summary ? String(row.summary) : null,
+    summaryStatus: (row.summary_status as SourceRecord["summaryStatus"]) ?? "not_generated",
+    summaryGeneratedAt: row.summary_generated_at ? new Date(row.summary_generated_at as string).toISOString() : null,
+    summaryProvider: row.summary_provider ? String(row.summary_provider) : null,
+    summaryModel: row.summary_model ? String(row.summary_model) : null,
+    archivedAt: row.archived_at ? new Date(row.archived_at as string).toISOString() : null,
     uploadedAt: new Date(row.uploaded_at as string).toISOString(),
     createdAt: new Date(row.created_at as string).toISOString(),
     updatedAt: new Date(row.updated_at as string).toISOString()
@@ -1780,7 +1808,7 @@ export class PostgresStore implements AppStore {
 
   async listSources(userId: string, filters: SourceSearchInput): Promise<SourceRecord[]> {
     const values: unknown[] = [userId];
-    const clauses = ["s.owner_user_id = $1"];
+    const clauses = ["s.owner_user_id = $1", "s.archived_at IS NULL"];
     if (filters.scope) {
       values.push(filters.scope);
       clauses.push(`s.scope = $${values.length}`);
@@ -1802,7 +1830,7 @@ export class PostgresStore implements AppStore {
     }
     if (filters.q) {
       values.push(`%${filters.q.toLowerCase()}%`);
-      clauses.push(`(lower(s.title) LIKE $${values.length} OR lower(coalesce(s.original_filename, '')) LIKE $${values.length} OR EXISTS (SELECT 1 FROM source_chunks sc WHERE sc.source_id = s.id AND lower(sc.text) LIKE $${values.length}))`);
+      clauses.push(`(lower(s.title) LIKE $${values.length} OR lower(coalesce(s.original_filename, '')) LIKE $${values.length} OR EXISTS (SELECT 1 FROM unnest(s.tags) tag WHERE lower(tag) LIKE $${values.length}) OR EXISTS (SELECT 1 FROM source_chunks sc WHERE sc.source_id = s.id AND lower(sc.text) LIKE $${values.length}))`);
     }
     const result = await this.pool.query(`SELECT s.* FROM sources s WHERE ${clauses.join(" AND ")} ORDER BY s.created_at DESC`, values);
     return result.rows.map(mapSource);
@@ -1817,8 +1845,9 @@ export class PostgresStore implements AppStore {
        (id, owner_user_id, title, original_filename, mime_type, source_type, scope, project_id,
         authority_classification, user_confirmed_classification, ai_suggested_classification,
         storage_key, original_url, size_bytes, processing_status, extraction_status,
-        extraction_version, failure_reason, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        extraction_version, failure_reason, metadata, tags, summary, summary_status,
+        summary_generated_at, summary_provider, summary_model, archived_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
        RETURNING *`,
       [
         input.id,
@@ -1839,7 +1868,14 @@ export class PostgresStore implements AppStore {
         input.extractionStatus,
         input.extractionVersion,
         input.failureReason,
-        input.metadata
+        input.metadata,
+        input.tags ?? [],
+        input.summary ?? null,
+        input.summaryStatus ?? "not_generated",
+        input.summaryGeneratedAt ?? null,
+        input.summaryProvider ?? null,
+        input.summaryModel ?? null,
+        input.archivedAt ?? null
       ]
     );
     const source = mapSource(result.rows[0]);
@@ -1873,9 +1909,13 @@ export class PostgresStore implements AppStore {
   async updateSource(userId: string, sourceId: string, input: SourceUpdateInput): Promise<SourceRecord | null> {
     const current = await this.getSource(userId, sourceId);
     if (!current) return null;
+    const summary = input.summary !== undefined ? (input.summary.trim() || null) : current.summary;
+    const summaryReady = input.summary !== undefined && Boolean(summary);
     const result = await this.pool.query(
       `UPDATE sources
-       SET title = $3, authority_classification = $4, user_confirmed_classification = $5, updated_at = now()
+       SET title = $3, authority_classification = $4, user_confirmed_classification = $5,
+           tags = $6, summary = $7, summary_status = $8, summary_generated_at = $9,
+           summary_provider = $10, summary_model = $11, updated_at = now()
        WHERE owner_user_id = $1 AND id = $2
        RETURNING *`,
       [
@@ -1883,8 +1923,47 @@ export class PostgresStore implements AppStore {
         sourceId,
         input.title ?? current.title,
         input.authorityClassification ?? current.authorityClassification,
-        input.userConfirmedClassification ?? current.userConfirmedClassification
+        input.userConfirmedClassification ?? current.userConfirmedClassification,
+        input.tags ?? current.tags,
+        summary,
+        input.summary !== undefined ? (summaryReady ? "ready" : "not_generated") : current.summaryStatus,
+        input.summary !== undefined && summaryReady ? new Date().toISOString() : current.summaryGeneratedAt,
+        input.summary !== undefined && summaryReady ? "manual_editor" : current.summaryProvider,
+        input.summary !== undefined && summaryReady ? null : current.summaryModel
       ]
+    );
+    return result.rows[0] ? mapSource(result.rows[0]) : null;
+  }
+
+  async suggestSourceTags(userId: string, sourceId: string, input: SourceTagSuggestionInput): Promise<SourceRecord | null> {
+    const current = await this.getSource(userId, sourceId);
+    if (!current) return null;
+    const suggestions = suggestTagsForSource(current);
+    const metadata = { ...current.metadata, tagSuggestions: suggestions, tagSuggestionProvider: "deterministic_metadata", tagSuggestionGeneratedAt: new Date().toISOString() };
+    const tags = input.persist ? [...new Set([...current.tags, ...suggestions])] : current.tags;
+    const result = await this.pool.query(
+      `UPDATE sources
+       SET tags = $3, metadata = $4, updated_at = now()
+       WHERE owner_user_id = $1 AND id = $2
+       RETURNING *`,
+      [userId, sourceId, tags, metadata]
+    );
+    return result.rows[0] ? mapSource(result.rows[0]) : null;
+  }
+
+  async generateSourceSummary(userId: string, sourceId: string, _input: SourceSummaryGenerateInput): Promise<SourceRecord | null> {
+    const current = await this.getSource(userId, sourceId);
+    if (!current) return null;
+    const metadata = {
+      ...current.metadata,
+      summaryUnavailableReason: "No source-summary AI provider is configured; deterministic fallback will not fabricate summaries."
+    };
+    const result = await this.pool.query(
+      `UPDATE sources
+       SET summary_status = 'unavailable', metadata = $3, updated_at = now()
+       WHERE owner_user_id = $1 AND id = $2
+       RETURNING *`,
+      [userId, sourceId, metadata]
     );
     return result.rows[0] ? mapSource(result.rows[0]) : null;
   }
@@ -1934,7 +2013,9 @@ export class PostgresStore implements AppStore {
       `SELECT ps.*, s.id AS s_id, s.owner_user_id, s.title, s.original_filename, s.mime_type, s.source_type, s.scope,
               s.project_id, s.authority_classification, s.user_confirmed_classification, s.ai_suggested_classification,
               s.storage_key, s.original_url, s.size_bytes, s.processing_status, s.extraction_status,
-              s.extraction_version, s.failure_reason, s.metadata, s.uploaded_at, s.created_at AS s_created_at,
+              s.extraction_version, s.failure_reason, s.metadata, s.tags, s.summary, s.summary_status,
+              s.summary_generated_at, s.summary_provider, s.summary_model, s.archived_at,
+              s.uploaded_at, s.created_at AS s_created_at,
               s.updated_at AS s_updated_at
        FROM project_sources ps
        JOIN sources s ON s.id = ps.source_id
@@ -1962,6 +2043,13 @@ export class PostgresStore implements AppStore {
       extraction_version: row.extraction_version,
       failure_reason: row.failure_reason,
       metadata: row.metadata,
+      tags: row.tags,
+      summary: row.summary,
+      summary_status: row.summary_status,
+      summary_generated_at: row.summary_generated_at,
+      summary_provider: row.summary_provider,
+      summary_model: row.summary_model,
+      archived_at: row.archived_at,
       uploaded_at: row.uploaded_at,
       created_at: row.s_created_at,
       updated_at: row.s_updated_at
@@ -1990,6 +2078,44 @@ export class PostgresStore implements AppStore {
   async removeSourceFromProject(userId: string, projectId: string, sourceId: string): Promise<void> {
     if (!(await this.getProject(userId, projectId))) return;
     await this.pool.query("DELETE FROM project_sources WHERE project_id = $1 AND source_id = $2", [projectId, sourceId]);
+  }
+
+  async archiveSource(userId: string, sourceId: string): Promise<SourceRecord | null> {
+    const current = await this.getSource(userId, sourceId);
+    if (!current) return null;
+    if (await this.sourceIsReferenced(sourceId)) throw new SourceInUseError();
+    const result = await this.pool.query(
+      `UPDATE sources
+       SET archived_at = now(), updated_at = now()
+       WHERE owner_user_id = $1 AND id = $2
+       RETURNING *`,
+      [userId, sourceId]
+    );
+    return result.rows[0] ? mapSource(result.rows[0]) : null;
+  }
+
+  private async sourceIsReferenced(sourceId: string): Promise<boolean> {
+    const checks = [
+      "SELECT 1 FROM project_sources WHERE source_id = $1",
+      "SELECT 1 FROM readiness_requirements WHERE source_id = $1",
+      "SELECT 1 FROM readiness_evidence WHERE source_id = $1",
+      "SELECT 1 FROM safety_metrics WHERE source_id = $1",
+      "SELECT 1 FROM competent_person_evidence WHERE authorization_source_id = $1 OR training_source_id = $1",
+      "SELECT 1 FROM safety_plan_revisions WHERE source_id = $1",
+      "SELECT 1 FROM plan_review_references WHERE source_id = $1",
+      "SELECT 1 FROM observation_photos WHERE source_id = $1",
+      "SELECT 1 FROM observation_reference_links WHERE source_id = $1",
+      "SELECT 1 FROM incident_attachments WHERE source_id = $1",
+      "SELECT 1 FROM contractor_corrective_actions WHERE source_id = $1",
+      "SELECT 1 FROM project_safety_decisions WHERE supporting_source_id = $1",
+      "SELECT 1 FROM incident_follow_ups WHERE linked_source_id = $1",
+      "SELECT 1 FROM safety_report_revisions WHERE evidence_manifest->'sourceIds' ? $1"
+    ];
+    for (const query of checks) {
+      const result = await this.pool.query(`${query} LIMIT 1`, [sourceId]);
+      if (result.rowCount) return true;
+    }
+    return false;
   }
 
   async searchSourceChunks(userId: string, filters: SourceSearchInput): Promise<SourceChunk[]> {

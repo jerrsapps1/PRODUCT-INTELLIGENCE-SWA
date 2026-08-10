@@ -218,6 +218,114 @@ describe("Phase 1 API", () => {
     expect(stillExists.status).toBe(200);
   });
 
+  it("reuses one global source across projects, unlinks safely, and blocks destructive delete while referenced", async () => {
+    const cookie = await login();
+    const firstProject = await createProject(cookie, "Reusable Sources A");
+    const secondProject = await createProject(cookie, "Reusable Sources B");
+    const source = await uploadTextSource(cookie, "OSHA Reusable Reference", "global fall protection reference");
+
+    for (const project of [firstProject, secondProject]) {
+      const response = await fetch(`${baseUrl}/api/projects/${project.id}/sources`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ sourceId: source.id, activationStatus: "associated" })
+      });
+      expect(response.status).toBe(201);
+    }
+
+    const sourceDetail = await json<{ source: { id: string; projectLinks: Array<{ projectId: string }> } }>(
+      await fetch(`${baseUrl}/api/sources/${source.id}`, { headers: { cookie } })
+    );
+    expect(sourceDetail.source.projectLinks.map((link) => link.projectId).sort()).toEqual([firstProject.id, secondProject.id].sort());
+
+    const deleteWhileReferenced = await fetch(`${baseUrl}/api/sources/${source.id}`, { method: "DELETE", headers: { cookie } });
+    expect(deleteWhileReferenced.status).toBe(409);
+
+    const unlinkFirst = await fetch(`${baseUrl}/api/projects/${firstProject.id}/sources/${source.id}`, { method: "DELETE", headers: { cookie } });
+    expect(unlinkFirst.status).toBe(204);
+    const stillExists = await fetch(`${baseUrl}/api/sources/${source.id}`, { headers: { cookie } });
+    expect(stillExists.status).toBe(200);
+
+    const secondProjectSources = await json<{ projectSources: Array<{ sourceId: string }> }>(
+      await fetch(`${baseUrl}/api/projects/${secondProject.id}/sources`, { headers: { cookie } })
+    );
+    expect(secondProjectSources.projectSources).toContainEqual(expect.objectContaining({ sourceId: source.id }));
+  });
+
+  it("archives an unreferenced library source and excludes it from source lists", async () => {
+    const cookie = await login();
+    const source = await uploadTextSource(cookie, "Unreferenced Library Source", "short reference");
+
+    const archived = await fetch(`${baseUrl}/api/sources/${source.id}`, { method: "DELETE", headers: { cookie } });
+    expect(archived.status).toBe(200);
+
+    const getArchived = await fetch(`${baseUrl}/api/sources/${source.id}`, { headers: { cookie } });
+    expect(getArchived.status).toBe(200);
+    const detail = await json<{ source: { archivedAt: string | null } }>(getArchived);
+    expect(detail.source.archivedAt).toBeTruthy();
+
+    const list = await json<{ sources: Array<{ id: string }> }>(await fetch(`${baseUrl}/api/sources`, { headers: { cookie } }));
+    expect(list.sources.map((item) => item.id)).not.toContain(source.id);
+  });
+
+  it("keeps current-context selection separate from association and authority", async () => {
+    const cookie = await login();
+    const project = await createProject(cookie, "Context Boundary");
+    const source = await uploadTextSource(cookie, "Context Only", "context selection text");
+    await fetch(`${baseUrl}/api/projects/${project.id}/sources`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ sourceId: source.id, activationStatus: "associated" })
+    });
+
+    const before = await json<{ projectSources: Array<{ sourceId: string; activationStatus: string }> }>(
+      await fetch(`${baseUrl}/api/projects/${project.id}/sources`, { headers: { cookie } })
+    );
+    expect(before.projectSources).toContainEqual(expect.objectContaining({ sourceId: source.id, activationStatus: "associated" }));
+
+    const after = await json<{ projectSources: Array<{ sourceId: string; activationStatus: string }> }>(
+      await fetch(`${baseUrl}/api/projects/${project.id}/sources`, { headers: { cookie } })
+    );
+    expect(after.projectSources).toEqual(before.projectSources);
+  });
+
+  it("supports source display-title editing, tags, deterministic tag suggestions, and honest summary status", async () => {
+    const cookie = await login();
+    const source = await uploadTextSource(cookie, "SOP 75 SUBCONTRACTOR MANAGEMENT PLAN 06-2024", "subcontractor management procedure");
+
+    const patched = await fetch(`${baseUrl}/api/sources/${source.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ title: "Subcontractor Management Plan - SOP 75", tags: ["GC Policy", "Plan / Procedure"] })
+    });
+    expect(patched.status).toBe(200);
+    const patchedBody = await json<{ source: { title: string; originalFilename: string; tags: string[] } }>(patched);
+    expect(patchedBody.source.title).toBe("Subcontractor Management Plan - SOP 75");
+    expect(patchedBody.source.originalFilename).toBe("SOP 75 SUBCONTRACTOR MANAGEMENT PLAN 06-2024.txt");
+    expect(patchedBody.source.tags).toEqual(["GC Policy", "Plan / Procedure"]);
+
+    const suggested = await fetch(`${baseUrl}/api/sources/${source.id}/suggest-tags`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ persist: true })
+    });
+    expect(suggested.status).toBe(200);
+    const suggestedBody = await json<{ source: { tags: string[]; metadata: { tagSuggestions?: string[] } } }>(suggested);
+    expect(suggestedBody.source.metadata.tagSuggestions?.length).toBeGreaterThan(0);
+    expect(suggestedBody.source.tags).toContain("Plan / Procedure");
+
+    const summary = await fetch(`${baseUrl}/api/sources/${source.id}/summary`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({})
+    });
+    expect(summary.status).toBe(200);
+    const summaryBody = await json<{ source: { summary: string | null; summaryStatus: string; summaryProvider: string | null } }>(summary);
+    expect(summaryBody.source.summary).toBeNull();
+    expect(summaryBody.source.summaryStatus).toBe("unavailable");
+    expect(summaryBody.source.summaryProvider).toBeNull();
+  });
+
   it("rejects unsafe URL sources", async () => {
     const cookie = await login();
     const response = await fetch(`${baseUrl}/api/sources/url`, {

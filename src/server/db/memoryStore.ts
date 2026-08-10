@@ -123,6 +123,8 @@ import type {
   SourceDetail,
   SourceRecord,
   SourceSearchInput,
+  SourceSummaryGenerateInput,
+  SourceTagSuggestionInput,
   SourceUpdateInput
 } from "../../shared/contracts";
 import {
@@ -136,9 +138,11 @@ import {
   DuplicateProjectSourceError,
   DuplicatePlanRevisionSourceError,
   DuplicateRequirementApplicationError,
+  SourceInUseError,
   type AppStore,
   type StoredUser
 } from "../store";
+import { suggestTagsForSource } from "../sourceOrganization";
 import { runPlanReviewAssistant, type ReviewReferenceContext } from "../planReviewAssistant";
 import { buildObservationReferenceQuery, runObservationAssistant } from "../observationAssistant";
 import { runIncidentAssistant } from "../incidentAssistant";
@@ -405,12 +409,13 @@ export class MemoryStore implements AppStore {
       : null;
     return [...this.sources.values()]
       .filter((source) => source.ownerUserId === userId)
+      .filter((source) => !source.archivedAt)
       .filter((source) => !filters.scope || source.scope === filters.scope)
       .filter((source) => !filters.sourceType || source.sourceType === filters.sourceType)
       .filter((source) => !filters.authorityClassification || source.authorityClassification === filters.authorityClassification)
       .filter((source) => !filters.projectId || source.projectId === filters.projectId || [...this.projectSources.values()].some((link) => link.projectId === filters.projectId && link.sourceId === source.id))
       .filter((source) => !filters.activeOnly || [...this.projectSources.values()].some((link) => link.sourceId === source.id && link.activationStatus === "active"))
-      .filter((source) => !filters.q || source.title.toLowerCase().includes(filters.q.toLowerCase()) || source.originalFilename?.toLowerCase().includes(filters.q.toLowerCase()) || textMatches?.has(source.id))
+      .filter((source) => !filters.q || source.title.toLowerCase().includes(filters.q.toLowerCase()) || source.originalFilename?.toLowerCase().includes(filters.q.toLowerCase()) || source.tags.some((tag) => tag.toLowerCase().includes(filters.q!.toLowerCase())) || textMatches?.has(source.id))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
@@ -422,6 +427,13 @@ export class MemoryStore implements AppStore {
     const source: SourceRecord = {
       ...input,
       ownerUserId: userId,
+      tags: input.tags ?? [],
+      summary: input.summary ?? null,
+      summaryStatus: input.summaryStatus ?? "not_generated",
+      summaryGeneratedAt: input.summaryGeneratedAt ?? null,
+      summaryProvider: input.summaryProvider ?? null,
+      summaryModel: input.summaryModel ?? null,
+      archivedAt: input.archivedAt ?? null,
       uploadedAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -453,8 +465,51 @@ export class MemoryStore implements AppStore {
       title: input.title ?? source.title,
       authorityClassification: input.authorityClassification ?? source.authorityClassification,
       userConfirmedClassification: input.userConfirmedClassification ?? source.userConfirmedClassification,
+      tags: input.tags ?? source.tags,
+      summary: input.summary !== undefined ? clean(input.summary) : source.summary,
+      summaryStatus: input.summary !== undefined ? (clean(input.summary) ? "ready" : "not_generated") : source.summaryStatus,
+      summaryGeneratedAt: input.summary !== undefined && clean(input.summary) ? now() : source.summaryGeneratedAt,
+      summaryProvider: input.summary !== undefined && clean(input.summary) ? "manual_editor" : source.summaryProvider,
+      summaryModel: input.summary !== undefined && clean(input.summary) ? null : source.summaryModel,
       updatedAt: now()
     };
+    this.sources.set(sourceId, updated);
+    return updated;
+  }
+
+  async suggestSourceTags(userId: string, sourceId: string, input: SourceTagSuggestionInput): Promise<SourceRecord | null> {
+    const source = this.sources.get(sourceId);
+    if (!source || source.ownerUserId !== userId) return null;
+    const suggestions = suggestTagsForSource(source);
+    const metadata = { ...source.metadata, tagSuggestions: suggestions, tagSuggestionProvider: "deterministic_metadata", tagSuggestionGeneratedAt: now() };
+    const updated = input.persist
+      ? { ...source, tags: [...new Set([...source.tags, ...suggestions])], metadata, updatedAt: now() }
+      : { ...source, metadata, updatedAt: now() };
+    this.sources.set(sourceId, updated);
+    return updated;
+  }
+
+  async generateSourceSummary(userId: string, sourceId: string, _input: SourceSummaryGenerateInput): Promise<SourceRecord | null> {
+    const source = this.sources.get(sourceId);
+    if (!source || source.ownerUserId !== userId) return null;
+    const updated = {
+      ...source,
+      summaryStatus: "unavailable" as const,
+      metadata: {
+        ...source.metadata,
+        summaryUnavailableReason: "No source-summary AI provider is configured; deterministic fallback will not fabricate summaries."
+      },
+      updatedAt: now()
+    };
+    this.sources.set(sourceId, updated);
+    return updated;
+  }
+
+  async archiveSource(userId: string, sourceId: string): Promise<SourceRecord | null> {
+    const source = this.sources.get(sourceId);
+    if (!source || source.ownerUserId !== userId) return null;
+    if (this.sourceIsReferenced(sourceId)) throw new SourceInUseError();
+    const updated = { ...source, archivedAt: now(), updatedAt: now() };
     this.sources.set(sourceId, updated);
     return updated;
   }
@@ -524,6 +579,23 @@ export class MemoryStore implements AppStore {
     if (!(await this.getProject(userId, projectId))) return;
     const link = [...this.projectSources.values()].find((item) => item.projectId === projectId && item.sourceId === sourceId);
     if (link) this.projectSources.delete(link.id);
+  }
+
+  private sourceIsReferenced(sourceId: string): boolean {
+    return [...this.projectSources.values()].some((link) => link.sourceId === sourceId) ||
+      [...this.readinessRequirements.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.readinessEvidence.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.safetyMetrics.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.competentPersons.values()].some((item) => item.authorizationSourceId === sourceId || item.trainingSourceId === sourceId) ||
+      [...this.planRevisions.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.planReferences.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.observationPhotos.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.observationReferences.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.incidentAttachments.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.contractorCorrectiveActions.values()].some((item) => item.sourceId === sourceId) ||
+      [...this.projectSafetyDecisions.values()].some((item) => item.supportingSourceId === sourceId) ||
+      [...this.incidentFollowUps.values()].some((item) => item.linkedSourceId === sourceId) ||
+      [...this.reportRevisions.values()].some((item) => item.evidenceManifest.sourceIds.includes(sourceId));
   }
 
   async searchSourceChunks(userId: string, filters: SourceSearchInput): Promise<SourceChunk[]> {

@@ -66,6 +66,8 @@ import {
   safetyMetricCreateSchema,
   sourceMetadataSchema,
   sourceSearchSchema,
+  sourceSummaryGenerateSchema,
+  sourceTagSuggestionSchema,
   sourceUpdateSchema,
   urlSourceCreateSchema,
   type UserSummary
@@ -85,6 +87,7 @@ import {
   DuplicatePlanRevisionSourceError,
   DuplicateProjectSourceError,
   DuplicateRequirementApplicationError,
+  SourceInUseError,
   type AppStore,
   type StoredUser
 } from "./store";
@@ -941,7 +944,14 @@ export async function createApp(options: AppOptions) {
             extractionStatus: "processing",
             extractionVersion: null,
             failureReason: null,
-            metadata: { storageLabel: storage.publicLabel(stored.key) }
+            metadata: { storageLabel: storage.publicLabel(stored.key) },
+            tags: [],
+            summary: null,
+            summaryStatus: "not_generated",
+            summaryGeneratedAt: null,
+            summaryProvider: null,
+            summaryModel: null,
+            archivedAt: null
           });
           const extraction = await extractSource({ sourceId, sourceType: allowed.sourceType, mimeType: file.mimeType, buffer: file.buffer });
           await store.addSourceChunks(userId, sourceId, materializeChunks(sourceId, extraction));
@@ -984,7 +994,14 @@ export async function createApp(options: AppOptions) {
           extractionStatus: "processing",
           extractionVersion: null,
           failureReason: null,
-          metadata: retrieved.metadata
+          metadata: retrieved.metadata,
+          tags: [],
+          summary: null,
+          summaryStatus: "not_generated",
+          summaryGeneratedAt: null,
+          summaryProvider: null,
+          summaryModel: null,
+          archivedAt: null
         });
         const extraction = await extractSource({ sourceId, sourceType: "url", mimeType: "text/html", text: retrieved.text, url: retrieved.finalUrl });
         await store.addSourceChunks(userId, sourceId, materializeChunks(sourceId, extraction));
@@ -1008,6 +1025,29 @@ export async function createApp(options: AppOptions) {
 
       if (method === "PATCH" && parts[0] === "api" && parts[1] === "sources" && parts.length === 3) {
         const source = await store.updateSource(userId, parts[2], await readJson(req, sourceUpdateSchema));
+        if (!source) sendJson(res, 404, { error: "Source not found" });
+        else sendJson(res, 200, { source });
+        return;
+      }
+
+      if (method === "POST" && parts[0] === "api" && parts[1] === "sources" && parts[3] === "suggest-tags" && parts.length === 4) {
+        const input = await readJson(req, sourceTagSuggestionSchema);
+        const source = await store.suggestSourceTags(userId, parts[2], { persist: input.persist ?? true });
+        if (!source) sendJson(res, 404, { error: "Source not found" });
+        else sendJson(res, 200, { source });
+        return;
+      }
+
+      if (method === "POST" && parts[0] === "api" && parts[1] === "sources" && parts[3] === "summary" && parts.length === 4) {
+        const input = await readJson(req, sourceSummaryGenerateSchema);
+        const source = await store.generateSourceSummary(userId, parts[2], { force: input.force ?? false });
+        if (!source) sendJson(res, 404, { error: "Source not found" });
+        else sendJson(res, 200, { source });
+        return;
+      }
+
+      if (method === "DELETE" && parts[0] === "api" && parts[1] === "sources" && parts.length === 3) {
+        const source = await store.archiveSource(userId, parts[2]);
         if (!source) sendJson(res, 404, { error: "Source not found" });
         else sendJson(res, 200, { source });
         return;
@@ -1078,6 +1118,10 @@ export async function createApp(options: AppOptions) {
         return;
       }
       if (error instanceof DuplicateProjectSourceError) {
+        sendJson(res, 409, { error: error.message });
+        return;
+      }
+      if (error instanceof SourceInUseError) {
         sendJson(res, 409, { error: error.message });
         return;
       }

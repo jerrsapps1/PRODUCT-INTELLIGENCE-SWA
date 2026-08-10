@@ -69,6 +69,7 @@ export const reportTypes = ["daily", "weekly", "monthly", "custom"] as const;
 export const reportFormats = ["narrative", "structured"] as const;
 export const reportStatuses = ["draft", "finalized"] as const;
 export const reportGenerationStatuses = ["not_generated", "generating", "ready", "failed"] as const;
+export const sourceSummaryStatuses = ["not_generated", "generating", "ready", "failed", "unavailable"] as const;
 export const assistantRetrievalScopes = ["current_project", "current_contractor", "selected_projects", "global_library", "entire_workspace"] as const;
 export const assistantMessageRoles = ["user", "assistant", "system"] as const;
 export const memoryScopes = ["global", "project"] as const;
@@ -124,7 +125,13 @@ export const sourceMetadataSchema = sourceMetadataBaseSchema.refine((value) => v
 export const sourceUpdateSchema = z.object({
   title: z.string().trim().min(1).max(220).optional(),
   authorityClassification: z.enum(authorityClassifications).optional(),
-  userConfirmedClassification: z.boolean().optional()
+  userConfirmedClassification: z.boolean().optional(),
+  tags: z.array(z.string().trim().min(1).max(40)).max(24).optional(),
+  summary: z.string().trim().max(4000).optional().or(z.literal(""))
+});
+
+export const sourceTagSuggestionSchema = z.object({
+  persist: z.coerce.boolean().default(true)
 });
 
 export const sourceSearchSchema = z.object({
@@ -143,6 +150,10 @@ export const projectSourceSchema = z.object({
 
 export const projectSourceActivationSchema = z.object({
   activationStatus: z.enum(activationStatuses)
+});
+
+export const sourceSummaryGenerateSchema = z.object({
+  force: z.coerce.boolean().default(false)
 });
 
 export const urlSourceCreateSchema = sourceMetadataBaseSchema.extend({
@@ -614,14 +625,17 @@ export type EngagementCreateInput = z.infer<typeof engagementCreateSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type SourceScope = (typeof sourceScopes)[number];
 export type SourceType = (typeof sourceTypes)[number];
+export type SourceSummaryStatus = (typeof sourceSummaryStatuses)[number];
 export type AuthorityClassification = (typeof authorityClassifications)[number];
 export type ProcessingStatus = (typeof processingStatuses)[number];
 export type ActivationStatus = (typeof activationStatuses)[number];
 export type SourceMetadataInput = z.infer<typeof sourceMetadataSchema>;
 export type SourceUpdateInput = z.infer<typeof sourceUpdateSchema>;
+export type SourceTagSuggestionInput = z.infer<typeof sourceTagSuggestionSchema>;
 export type SourceSearchInput = z.infer<typeof sourceSearchSchema>;
 export type ProjectSourceInput = z.infer<typeof projectSourceSchema>;
 export type ProjectSourceActivationInput = z.infer<typeof projectSourceActivationSchema>;
+export type SourceSummaryGenerateInput = z.infer<typeof sourceSummaryGenerateSchema>;
 export type UrlSourceCreateInput = z.infer<typeof urlSourceCreateSchema>;
 export type ReadinessStatus = (typeof readinessStatuses)[number];
 export type OverallReadinessStatus = (typeof overallReadinessStatuses)[number];
@@ -778,6 +792,13 @@ export interface SourceRecord {
   extractionVersion: string | null;
   failureReason: string | null;
   metadata: Record<string, unknown>;
+  tags: string[];
+  summary: string | null;
+  summaryStatus: SourceSummaryStatus;
+  summaryGeneratedAt: string | null;
+  summaryProvider: string | null;
+  summaryModel: string | null;
+  archivedAt: string | null;
   uploadedAt: string;
   createdAt: string;
   updatedAt: string;
