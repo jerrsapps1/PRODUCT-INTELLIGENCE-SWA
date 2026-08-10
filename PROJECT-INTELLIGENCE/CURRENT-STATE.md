@@ -22,6 +22,7 @@ Status date: 2026-08-09
 - The safety-reporting model preserves editable report records, evidence manifests, revisions, finalization status, and audit events separately from source records and underlying project evidence.
 - The assistant-intelligence model preserves conversations, messages, retrieval manifests, memory, instructions, skills, assistant runs, and proposed actions separately from evidence and authoritative operational records.
 - Phase 8 assistant capability is classified as **B - Deterministic Structured Assistant**: credible bounded local orchestration, not an external conversational provider.
+- UI refinement doctrine for the NotebookLM-inspired Sources / Assistant / Workbench workspace is recorded under `PROJECT-INTELLIGENCE/ui/`; this is presentation/navigation refinement only and does not begin Phase 9.
 - Sources do not become controlling authority merely because they exist in the library.
 
 ## Implemented in Phase 1

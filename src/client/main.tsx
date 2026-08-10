@@ -571,12 +571,16 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
 
       <nav className="mobile-tabs" aria-label="Workspace panels">
         <button className={activeView === "sources" ? "active" : ""} onClick={() => setActiveView("sources")}>Sources</button>
-        <button className={activeView === "workspace" ? "active" : ""} onClick={() => setActiveView("workspace")}>Workspace</button>
+        <button className={activeView === "workspace" ? "active" : ""} onClick={() => setActiveView("workspace")}>Assistant</button>
         <button className={activeView === "workbench" ? "active" : ""} onClick={() => setActiveView("workbench")}>Workbench</button>
       </nav>
 
       <section className="workspace-grid">
         <aside className={`panel left ${activeView === "sources" ? "show" : ""}`}>
+          <div className="panel-title">
+            <p className="eyebrow">Sources</p>
+            <h2>Context</h2>
+          </div>
           <ProjectPanel
             projects={projects}
             selectedProjectId={selectedProjectId}
@@ -605,6 +609,10 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
         </aside>
 
         <section className={`panel center ${activeView === "workspace" ? "show" : ""}`}>
+          <div className="panel-title">
+            <p className="eyebrow">Assistant</p>
+            <h2>Project workspace</h2>
+          </div>
           <WorkspacePanel
             project={selectedProject}
             engagements={engagements}
@@ -629,6 +637,10 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
         </section>
 
         <aside className={`panel right ${activeView === "workbench" ? "show" : ""}`}>
+          <div className="panel-title">
+            <p className="eyebrow">Workbench</p>
+            <h2>Tools</h2>
+          </div>
           <SourceWorkbench
             project={selectedProject}
             sources={sources}
