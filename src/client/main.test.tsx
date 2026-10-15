@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { SourceNav, constrainWorkspacePanelWidths } from "./main";
+import { ChangePasswordDialog, SourceNav, constrainWorkspacePanelWidths } from "./main";
 import type { Project, ProjectSourceLink, SourceRecord } from "../shared/contracts";
 
 function EmptyWorkspaceState() {
@@ -11,6 +11,25 @@ function EmptyWorkspaceState() {
     </div>
   );
 }
+
+describe("change password dialog", () => {
+  it("checks length and confirmation before calling the API", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    render(<ChangePasswordDialog onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Current password"), { target: { value: "old-password-1" } });
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "short" } });
+    fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "short" } });
+    fireEvent.click(screen.getByRole("button", { name: "Change password" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Use at least 10 characters");
+
+    fireEvent.change(screen.getByLabelText("New password"), { target: { value: "a-new-password-123" } });
+    fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "a-new-password-124" } });
+    fireEvent.click(screen.getByRole("button", { name: "Change password" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("The new passwords don't match.");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+});
 
 describe("foundation UI states", () => {
   it("keeps resizable desktop panels within workspace constraints", () => {

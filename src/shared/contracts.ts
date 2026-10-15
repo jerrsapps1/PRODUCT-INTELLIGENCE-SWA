@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "./passwordPolicy";
 
 export const federalClassifications = ["Federal", "Non-Federal"] as const;
 export const sourceScopes = ["global", "project", "contractor"] as const;
@@ -108,6 +109,18 @@ export const engagementCreateSchema = z.object({
 export const loginSchema = z.object({
   email: z.string().trim().email(),
   password: z.string().min(1)
+});
+
+export { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH };
+
+export const newPasswordSchema = z
+  .string()
+  .min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters`)
+  .max(MAX_PASSWORD_LENGTH, `Use at most ${MAX_PASSWORD_LENGTH} characters`);
+
+export const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: newPasswordSchema
 });
 
 export const sourceMetadataBaseSchema = z.object({
@@ -623,6 +636,7 @@ export type ProjectCreateInput = z.infer<typeof projectCreateSchema>;
 export type ContractorCreateInput = z.infer<typeof contractorCreateSchema>;
 export type EngagementCreateInput = z.infer<typeof engagementCreateSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
+export type PasswordChangeInput = z.infer<typeof passwordChangeSchema>;
 export type SourceScope = (typeof sourceScopes)[number];
 export type SourceType = (typeof sourceTypes)[number];
 export type SourceSummaryStatus = (typeof sourceSummaryStatuses)[number];

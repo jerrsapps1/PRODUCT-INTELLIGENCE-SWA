@@ -46,6 +46,7 @@ import type {
   SourceScope,
   UserSummary
 } from "../shared/contracts";
+import { MIN_PASSWORD_LENGTH } from "../shared/passwordPolicy";
 import "./styles.css";
 
 type View = "sources" | "workspace" | "workbench";
@@ -282,8 +283,71 @@ function LoginScreen({
           {error ? <p className="form-error" role="alert">{error}</p> : null}
           <button className="primary" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
         </form>
+        <details className="auth-help">
+          <summary>Forgot your password?</summary>
+          <p>
+            On the computer running SWA, open the <strong>Reset SWA Password</strong> desktop shortcut (or run{" "}
+            <code>npm.cmd run auth:reset-password</code> in the project folder) and choose a new password. Your projects and
+            sources are not affected.
+          </p>
+        </details>
       </section>
     </main>
+  );
+}
+
+export function ChangePasswordDialog({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    if (newPassword.length < MIN_PASSWORD_LENGTH) return setError(`Use at least ${MIN_PASSWORD_LENGTH} characters for the new password.`);
+    if (newPassword !== confirmPassword) return setError("The new passwords don't match.");
+    setBusy(true);
+    try {
+      await api<void>("/api/auth/password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) });
+      onChanged();
+    } catch (changeError) {
+      setError(changeError instanceof Error ? changeError.message : "Unable to change the password");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section className="dialog dialog-narrow" role="dialog" aria-modal="true" aria-labelledby="change-password-title">
+        <div className="project-heading">
+          <div>
+            <p className="eyebrow">Account</p>
+            <h2 id="change-password-title">Change password</h2>
+          </div>
+          <button className="ghost" type="button" onClick={onClose}>Close</button>
+        </div>
+        <form onSubmit={submit} className="stack">
+          <label htmlFor="current-password">
+            Current password
+            <input id="current-password" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
+          </label>
+          <label htmlFor="new-password">
+            New password
+            <input id="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required />
+          </label>
+          <label htmlFor="confirm-password">
+            Confirm new password
+            <input id="confirm-password" type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required />
+          </label>
+          <p className="muted">At least {MIN_PASSWORD_LENGTH} characters. Other signed-in browsers will be signed out; this one stays signed in.</p>
+          {error ? <p className="form-error" role="alert">{error}</p> : null}
+          <button className="primary" disabled={busy}>{busy ? "Saving..." : "Change password"}</button>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -709,6 +773,8 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
     );
   }, [activeConversationId]);
 
+  const [changingPassword, setChangingPassword] = useState(false);
+
   async function logout() {
     await api<void>("/api/auth/logout", { method: "POST" });
     onLogout();
@@ -721,8 +787,20 @@ function WorkspaceHome({ user, onLogout }: { user: UserSummary; onLogout: () => 
           <p className="eyebrow">Signed in as {user.displayName}</p>
           <h1>Project Intelligence</h1>
         </div>
-        <button className="ghost" onClick={logout}>Log out</button>
+        <div className="topbar-actions">
+          <button className="ghost" onClick={() => setChangingPassword(true)}>Change password</button>
+          <button className="ghost" onClick={logout}>Log out</button>
+        </div>
       </header>
+      {changingPassword ? (
+        <ChangePasswordDialog
+          onClose={() => setChangingPassword(false)}
+          onChanged={() => {
+            setChangingPassword(false);
+            setStatus("Password changed. Other signed-in sessions were signed out.");
+          }}
+        />
+      ) : null}
 
       {error ? <p className="banner" role="alert">{error}</p> : null}
       {status ? <p className="banner muted">{status}</p> : null}

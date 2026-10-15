@@ -9,6 +9,7 @@ import {
   contractorRequirementUpdateSchema,
   engagementCreateSchema,
   loginSchema,
+  passwordChangeSchema,
   projectSourceActivationSchema,
   projectSourceSchema,
   projectCreateSchema,
@@ -203,6 +204,25 @@ export async function createApp(options: AppOptions) {
         const token = parse(req.headers.cookie ?? "")[sessionCookie];
         if (token) await store.deleteSession(hashSessionToken(token));
         sendNoContent(res, { "set-cookie": cookieHeader("", Boolean(options.secureCookies), 0) });
+        return;
+      }
+
+      if (method === "POST" && parts.join("/") === "api/auth/password") {
+        const user = await getAuthed(req, store);
+        if (!user) {
+          sendJson(res, 401, { error: "Authentication required" });
+          return;
+        }
+        const input = await readJson(req, passwordChangeSchema);
+        if (!verifyPassword(input.currentPassword, user.passwordHash)) {
+          sendJson(res, 400, { error: "Current password is incorrect" });
+          return;
+        }
+        await store.setUserPassword(user.id, hashPassword(input.newPassword));
+        // Sign out every other session; this one stays signed in.
+        const token = parse(req.headers.cookie ?? "")[sessionCookie];
+        await store.deleteUserSessions(user.id, token ? hashSessionToken(token) : undefined);
+        sendNoContent(res);
         return;
       }
 

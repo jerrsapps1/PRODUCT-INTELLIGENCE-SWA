@@ -125,6 +125,9 @@ export interface AppStore {
   findUserBySessionTokenHash(tokenHash: string): Promise<StoredUser | null>;
   createSession(userId: string, tokenHash: string, expiresAt: Date): Promise<void>;
   deleteSession(tokenHash: string): Promise<void>;
+  setUserPassword(userId: string, passwordHash: string): Promise<void>;
+  /** Signs the user out everywhere, optionally keeping one session (the caller's own). */
+  deleteUserSessions(userId: string, exceptTokenHash?: string): Promise<void>;
   listProjects(userId: string): Promise<Project[]>;
   createProject(userId: string, input: ProjectCreateInput): Promise<Project>;
   getProject(userId: string, projectId: string): Promise<Project | null>;

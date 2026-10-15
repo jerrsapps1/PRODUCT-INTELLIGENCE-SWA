@@ -22,3 +22,4 @@ function New-Shortcut {
 
 New-Shortcut -Name "SWA Local" -ScriptPath (Join-Path $repoRoot "tools\start-swa-local.ps1") -Description "Start Product Intelligence SWA local services and open the app."
 New-Shortcut -Name "Stop SWA Local" -ScriptPath (Join-Path $repoRoot "tools\stop-swa-local.ps1") -Description "Stop Product Intelligence SWA local app services started from this repository."
+New-Shortcut -Name "Reset SWA Password" -ScriptPath (Join-Path $repoRoot "tools\reset-swa-password.ps1") -Description "Reset a forgotten Product Intelligence SWA password on this computer (backs up the database first)."
