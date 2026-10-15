@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "concurrently \"vite --host 127.0.0.1\" \"tsx watch src/server/index.ts\"",
     "dev:api": "tsx watch src/server/index.ts",
-    "auth:reset-password": "tsx src/server/resetPasswordCli.ts",
+    "auth:accounts": "tsx src/server/accountsCli.ts list",
+    "auth:create-account": "tsx src/server/accountsCli.ts create",
+    "auth:reset-password": "tsx src/server/accountsCli.ts reset",
+    "auth:secure-env": "tsx src/server/accountsCli.ts secure-env",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build && esbuild src/server/index.ts --bundle --platform=node --packages=external --format=esm --outfile=dist/server/index.js",
     "test": "vitest run"

@@ -14,6 +14,7 @@ const server = await createApp({
   storage: new LocalObjectStorage(config.localStorageDir),
   bootstrapEmail: config.bootstrapEmail,
   bootstrapPassword: config.bootstrapPassword,
+  bootstrapPasswordHash: config.bootstrapPasswordHash,
   bootstrapDisplayName: config.bootstrapDisplayName,
   secureCookies: config.nodeEnv === "production"
 });

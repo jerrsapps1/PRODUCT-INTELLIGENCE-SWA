@@ -30,7 +30,9 @@ Status date: 2026-08-09
 
 ## Implemented in Phase 1
 
-- Simple private authentication with an environment-configured bootstrap user and HTTP-only session cookie.
+- Simple private authentication with an environment-configured bootstrap user and HTTP-only session cookie. Passwords are stored only as scrypt hashes; the first-run `.env` password may be stored as `BOOTSTRAP_PASSWORD_HASH`.
+- Password change for the signed-in user (current password required; other sessions signed out).
+- Local account utility (`SWA Accounts` / `Reset SWA Password` shortcuts; `npm run auth:accounts`, `auth:create-account`, `auth:reset-password`, `auth:secure-env`): list and create accounts (each with its own workspace), reset forgotten passwords after a database backup, and remove the plain-text password from `.env`. No web or email reset. `.env` bootstrap values only create the account the first time.
 - Protected project, contractor, and project-contractor engagement APIs.
 - Blank project creation and reopening through persisted API records.
 - Contractor master record creation independent from project engagements.

@@ -102,6 +102,8 @@ export interface AppOptions {
   storage?: ObjectStorage;
   bootstrapEmail: string;
   bootstrapPassword: string;
+  /** When set, used as-is instead of hashing bootstrapPassword. */
+  bootstrapPasswordHash?: string;
   bootstrapDisplayName: string;
   secureCookies?: boolean;
 }
@@ -160,7 +162,7 @@ export async function createApp(options: AppOptions) {
   await store.ensureBootstrapUser({
     email: options.bootstrapEmail,
     displayName: options.bootstrapDisplayName,
-    passwordHash: hashPassword(options.bootstrapPassword)
+    passwordHash: options.bootstrapPasswordHash ?? hashPassword(options.bootstrapPassword)
   });
 
   async function requireAuth(req: IncomingMessage, res: ServerResponse): Promise<AuthedRequest | null> {

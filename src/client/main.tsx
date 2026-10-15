@@ -286,9 +286,9 @@ function LoginScreen({
         <details className="auth-help">
           <summary>Forgot your password?</summary>
           <p>
-            On the computer running SWA, open the <strong>Reset SWA Password</strong> desktop shortcut (or run{" "}
-            <code>npm.cmd run auth:reset-password</code> in the project folder) and choose a new password. Your projects and
-            sources are not affected.
+            On the computer running SWA, open the <strong>SWA Accounts</strong> (or <strong>Reset SWA Password</strong>) desktop
+            shortcut, or run <code>npm.cmd run auth:reset-password</code> in the project folder, and choose a new password. Your
+            projects and sources are not affected. New accounts are created the same way.
           </p>
         </details>
       </section>

@@ -187,10 +187,13 @@ try {
     }
   }
 
-  foreach ($required in @("DATABASE_URL", "BOOTSTRAP_EMAIL", "BOOTSTRAP_PASSWORD", "SESSION_SECRET")) {
+  foreach ($required in @("DATABASE_URL", "BOOTSTRAP_EMAIL", "SESSION_SECRET")) {
     if (![Environment]::GetEnvironmentVariable($required, "Process")) {
       throw "$required is required in .env or the process environment."
     }
+  }
+  if (![Environment]::GetEnvironmentVariable("BOOTSTRAP_PASSWORD_HASH", "Process") -and ![Environment]::GetEnvironmentVariable("BOOTSTRAP_PASSWORD", "Process")) {
+    throw "BOOTSTRAP_PASSWORD_HASH (or BOOTSTRAP_PASSWORD) is required in .env. Run tools\swa-accounts.ps1 -Action secure-env to set it."
   }
 
   if (!(Test-Path (Join-Path $repoRoot "node_modules"))) {

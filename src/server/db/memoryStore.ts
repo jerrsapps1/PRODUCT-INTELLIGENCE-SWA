@@ -139,6 +139,8 @@ import {
   DuplicatePlanRevisionSourceError,
   DuplicateRequirementApplicationError,
   SourceInUseError,
+  DuplicateAccountError,
+  type AccountSummary,
   type AppStore,
   type StoredUser
 } from "../store";
@@ -272,11 +274,28 @@ export class MemoryStore implements AppStore {
 
   async migrate(): Promise<void> {}
 
+  private userCreatedAt = new Map<string, string>();
+
+  async createUser(user: { email: string; displayName: string; passwordHash: string }): Promise<AccountSummary> {
+    const email = user.email.toLowerCase();
+    if (await this.findUserByEmail(email)) throw new DuplicateAccountError(email);
+    const id = randomUUID();
+    const createdAt = now();
+    this.users.set(id, { id, email, displayName: user.displayName, passwordHash: user.passwordHash });
+    this.userCreatedAt.set(id, createdAt);
+    return { id, email, displayName: user.displayName, createdAt };
+  }
+
+  async listUsers(): Promise<AccountSummary[]> {
+    return [...this.users.values()].map((u) => ({ id: u.id, email: u.email, displayName: u.displayName, createdAt: this.userCreatedAt.get(u.id) ?? "" }));
+  }
+
   async ensureBootstrapUser(user: { email: string; displayName: string; passwordHash: string }): Promise<void> {
     const existing = await this.findUserByEmail(user.email);
     if (existing) return;
     const id = randomUUID();
     this.users.set(id, { id, email: user.email.toLowerCase(), displayName: user.displayName, passwordHash: user.passwordHash });
+    this.userCreatedAt.set(id, now());
   }
 
   async findUserByEmail(email: string): Promise<StoredUser | null> {

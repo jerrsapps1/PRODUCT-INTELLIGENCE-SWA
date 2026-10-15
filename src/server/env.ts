@@ -5,7 +5,10 @@ export interface ServerConfig {
   port: number;
   databaseUrl?: string;
   bootstrapEmail: string;
+  /** Plain-text first-run password (legacy / generated). Ignored when bootstrapPasswordHash is set. */
   bootstrapPassword: string;
+  /** Preferred: the scrypt hash of the first-run password (BOOTSTRAP_PASSWORD_HASH), so .env holds no plain-text password. */
+  bootstrapPasswordHash?: string;
   bootstrapDisplayName: string;
   sessionSecret: string;
   localStorageDir: string;
@@ -39,9 +42,13 @@ function loadLocalEnvFile(env: NodeJS.ProcessEnv = process.env): void {
 export function readConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   loadLocalEnvFile(env);
 
+  const bootstrapPasswordHash = env.BOOTSTRAP_PASSWORD_HASH?.trim() || undefined;
+  if (bootstrapPasswordHash && !/^scrypt\$[0-9a-f]{32}\$[0-9a-f]{128}$/.test(bootstrapPasswordHash)) {
+    throw new Error("BOOTSTRAP_PASSWORD_HASH is not a valid password hash. Generate it with `npm run auth:secure-env`.");
+  }
   const bootstrapPassword = env.BOOTSTRAP_PASSWORD ?? "change-me-in-production";
-  if (env.NODE_ENV === "production" && bootstrapPassword === "change-me-in-production") {
-    throw new Error("BOOTSTRAP_PASSWORD must be set in production");
+  if (env.NODE_ENV === "production" && !bootstrapPasswordHash && bootstrapPassword === "change-me-in-production") {
+    throw new Error("BOOTSTRAP_PASSWORD_HASH (or BOOTSTRAP_PASSWORD) must be set in production");
   }
 
   return {
@@ -49,6 +56,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     databaseUrl: env.DATABASE_URL,
     bootstrapEmail: env.BOOTSTRAP_EMAIL ?? "owner@example.com",
     bootstrapPassword,
+    bootstrapPasswordHash,
     bootstrapDisplayName: env.BOOTSTRAP_DISPLAY_NAME ?? "Safety Professional",
     sessionSecret: env.SESSION_SECRET ?? "development-session-secret",
     localStorageDir: env.LOCAL_STORAGE_DIR ?? ".data/source-objects",

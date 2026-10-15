@@ -25,7 +25,8 @@ On Windows, run `tools\install-swa-shortcuts.ps1` once to create desktop shortcu
 
 - `SWA Local` starts the local launcher.
 - `Stop SWA Local` stops repo-owned SWA app processes on the local development ports.
-- `Reset SWA Password` resets a forgotten password (see below).
+- `SWA Accounts` lists and creates accounts, resets a password, or hashes the `.env` password (see below).
+- `Reset SWA Password` goes straight to resetting a forgotten password.
 
 The launcher uses the existing `npm.cmd run dev` script, waits for the API health endpoint and Vite frontend, then opens `http://127.0.0.1:5173/` in the default browser.
 
@@ -37,13 +38,26 @@ Local URLs:
 - API health: `http://127.0.0.1:4174/api/health`
 - API base through Vite: `/api`, proxied to `http://127.0.0.1:4174`
 
-### Passwords
+### Accounts and passwords
 
-- **Change your password** while signed in: **Change password** in the top bar. It needs the current password; other signed-in browsers are signed out, this one stays signed in.
-- **Forgot it?** On the computer running SWA, open the `Reset SWA Password` shortcut (re-run `tools\install-swa-shortcuts.ps1` once to create it), or run `tools\reset-swa-password.ps1`. It starts Docker and the local database if needed, backs the database up to `.data\backups\`, then asks for the account (default `BOOTSTRAP_EMAIL`) and a new password typed without being shown. Only that account's password changes, and it is signed out everywhere. Projects, sources and records are untouched.
-- The underlying command is `npm.cmd run auth:reset-password` (needs `DATABASE_URL`; run it in an interactive terminal). There is no reset over the web: resetting requires access to this computer.
-- `BOOTSTRAP_PASSWORD` in `.env` is only used to create the account the first time. Changing it later does not change an existing account's password.
+Passwords are only ever stored as scrypt hashes in the database. Accounts are managed on the computer running SWA, never over the web:
+
+| Task | Shortcut / script | Command |
+|---|---|---|
+| List accounts | `SWA Accounts` → 1 | `npm.cmd run auth:accounts` |
+| Create an account | `SWA Accounts` → 2 | `npm.cmd run auth:create-account` |
+| Reset a forgotten password | `SWA Accounts` → 3, or `Reset SWA Password` | `npm.cmd run auth:reset-password` |
+| Remove the plain-text password from `.env` | `SWA Accounts` → 4 | `npm.cmd run auth:secure-env` |
+
+- Re-run `tools\install-swa-shortcuts.ps1` once to create the shortcuts. `tools\swa-accounts.ps1 -Action list|create|reset|secure-env` runs one task directly.
+- Before creating an account or resetting a password, the script starts Docker and the local database if needed and backs the database up to `.data\backups\`. Passwords are typed without being shown.
+- **Each account has its own workspace**: projects, contractors, sources and records belong to the account that created them. A new account starts empty.
+- Signed in, use **Change password** in the top bar (current password required; other browsers are signed out).
 - Passwords must be at least 10 characters.
+
+#### The password in `.env`
+
+`BOOTSTRAP_EMAIL` plus `BOOTSTRAP_PASSWORD_HASH` (or the older plain-text `BOOTSTRAP_PASSWORD`) only **create** that account the first time the server starts with that email. They never change an existing account's password, and changing `BOOTSTRAP_EMAIL` creates an additional, separate account. Run `npm.cmd run auth:secure-env` (or `SWA Accounts` → 4) to replace a plain-text `BOOTSTRAP_PASSWORD` with `BOOTSTRAP_PASSWORD_HASH` in place; the server refuses to start with a malformed hash. `DATABASE_URL` and `SESSION_SECRET` must stay readable by the server, so keep `.env` private (it is ignored by Git).
 
 Local launcher logs are written under `.data/local-runtime/logs/`, which is ignored by Git.
 

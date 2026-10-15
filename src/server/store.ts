@@ -118,8 +118,22 @@ export interface StoredUser extends UserSummary {
   passwordHash: string;
 }
 
+export interface AccountSummary extends UserSummary {
+  createdAt: string;
+}
+
+export class DuplicateAccountError extends Error {
+  constructor(email: string) {
+    super(`An account already exists for ${email}`);
+    this.name = "DuplicateAccountError";
+  }
+}
+
 export interface AppStore {
   migrate(): Promise<void>;
+  /** Creates an account; throws DuplicateAccountError if the email is taken. */
+  createUser(user: { email: string; displayName: string; passwordHash: string }): Promise<AccountSummary>;
+  listUsers(): Promise<AccountSummary[]>;
   ensureBootstrapUser(user: { email: string; displayName: string; passwordHash: string }): Promise<void>;
   findUserByEmail(email: string): Promise<StoredUser | null>;
   findUserBySessionTokenHash(tokenHash: string): Promise<StoredUser | null>;

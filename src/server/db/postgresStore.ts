@@ -140,6 +140,8 @@ import {
   DuplicateProjectSourceError,
   DuplicateRequirementApplicationError,
   SourceInUseError,
+  DuplicateAccountError,
+  type AccountSummary,
   type AppStore,
   type StoredUser
 } from "../store";
@@ -1633,6 +1635,25 @@ export class PostgresStore implements AppStore {
 
   async migrate(): Promise<void> {
     await this.pool.query(initialMigration);
+  }
+
+  async createUser(user: { email: string; displayName: string; passwordHash: string }): Promise<AccountSummary> {
+    const email = user.email.toLowerCase();
+    const result = await this.pool.query(
+      `INSERT INTO users (email, display_name, password_hash)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (email) DO NOTHING
+       RETURNING id, email, display_name, created_at`,
+      [email, user.displayName, user.passwordHash]
+    );
+    const row = result.rows[0];
+    if (!row) throw new DuplicateAccountError(email);
+    return { id: String(row.id), email: String(row.email), displayName: String(row.display_name), createdAt: new Date(row.created_at).toISOString() };
+  }
+
+  async listUsers(): Promise<AccountSummary[]> {
+    const result = await this.pool.query("SELECT id, email, display_name, created_at FROM users ORDER BY created_at, email");
+    return result.rows.map((row) => ({ id: String(row.id), email: String(row.email), displayName: String(row.display_name), createdAt: new Date(row.created_at).toISOString() }));
   }
 
   async ensureBootstrapUser(user: { email: string; displayName: string; passwordHash: string }): Promise<void> {
