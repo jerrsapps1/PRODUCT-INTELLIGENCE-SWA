@@ -21,7 +21,7 @@ Authoritative product doctrine lives under `PROJECT-INTELLIGENCE/`. Root-level f
 
 ### One-click Windows launch
 
-On Windows, run `tools\install-swa-shortcuts.ps1` once to create desktop shortcuts:
+On Windows, run `tools\install-swa-shortcuts.ps1` once (and again after `git pull` when new shortcuts are added) to create shortcuts on the desktop and in the Start menu (Start > **Product Intelligence SWA**, or type "SWA" in Windows search):
 
 - `SWA Local` starts the local launcher.
 - `Stop SWA Local` stops repo-owned SWA app processes on the local development ports.
