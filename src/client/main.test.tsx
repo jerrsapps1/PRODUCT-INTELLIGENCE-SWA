@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ChangePasswordDialog, SourceNav, constrainWorkspacePanelWidths } from "./main";
+import { ChangePasswordDialog, LoginScreen, SourceNav, constrainWorkspacePanelWidths } from "./main";
 import type { Project, ProjectSourceLink, SourceRecord } from "../shared/contracts";
 
 function EmptyWorkspaceState() {
@@ -11,6 +11,23 @@ function EmptyWorkspaceState() {
     </div>
   );
 }
+
+describe("sign-in lock", () => {
+  it("explains the lock and disables sign-in while locked", () => {
+    const onCheckAgain = vi.fn();
+    render(<LoginScreen onLogin={vi.fn()} error="" setError={vi.fn()} locked onCheckAgain={onCheckAgain} />);
+    expect(screen.getByText("Sign-in is locked")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(onCheckAgain).toHaveBeenCalled();
+  });
+
+  it("shows no notice when unlocked", () => {
+    render(<LoginScreen onLogin={vi.fn()} error="" setError={vi.fn()} />);
+    expect(screen.queryByText("Sign-in is locked")).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+  });
+});
 
 describe("change password dialog", () => {
   it("checks length and confirmation before calling the API", () => {

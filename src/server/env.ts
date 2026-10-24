@@ -12,6 +12,8 @@ export interface ServerConfig {
   bootstrapDisplayName: string;
   sessionSecret: string;
   localStorageDir: string;
+  /** Sign-in lock state file (Lock SWA / Unlock SWA). */
+  accessLockFile: string;
   nodeEnv: string;
 }
 
@@ -60,6 +62,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     bootstrapDisplayName: env.BOOTSTRAP_DISPLAY_NAME ?? "Safety Professional",
     sessionSecret: env.SESSION_SECRET ?? "development-session-secret",
     localStorageDir: env.LOCAL_STORAGE_DIR ?? ".data/source-objects",
+    accessLockFile: env.ACCESS_LOCK_FILE ?? ".data/access-lock.json",
     nodeEnv: env.NODE_ENV ?? "development"
   };
 }

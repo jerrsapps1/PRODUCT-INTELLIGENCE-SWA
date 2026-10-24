@@ -94,6 +94,7 @@ import {
 } from "./store";
 import { readMultipart } from "./upload";
 import { retrieveUrlText } from "./urlSafety";
+import { AccessLock, LOCKED_MESSAGE } from "./accessLock";
 
 const sessionCookie = "pi_session";
 
@@ -106,6 +107,8 @@ export interface AppOptions {
   bootstrapPasswordHash?: string;
   bootstrapDisplayName: string;
   secureCookies?: boolean;
+  /** Sign-in lock state file; when absent, sign-in can't be locked. */
+  accessLockFile?: string;
 }
 
 interface AuthedRequest {
@@ -164,8 +167,17 @@ export async function createApp(options: AppOptions) {
     displayName: options.bootstrapDisplayName,
     passwordHash: options.bootstrapPasswordHash ?? hashPassword(options.bootstrapPassword)
   });
+  const accessLock = options.accessLockFile ? new AccessLock(options.accessLockFile, store) : null;
+  // Ends sessions left over from a lock applied while the server was stopped.
+  await accessLock?.check();
+  const isLocked = async () => (accessLock ? accessLock.check() : false);
+  const sendLocked = (res: ServerResponse) => sendJson(res, 423, { error: LOCKED_MESSAGE, locked: true });
 
   async function requireAuth(req: IncomingMessage, res: ServerResponse): Promise<AuthedRequest | null> {
+    if (await isLocked()) {
+      sendLocked(res);
+      return null;
+    }
     const user = await getAuthed(req, store);
     if (!user) {
       sendJson(res, 401, { error: "Authentication required" });
@@ -190,6 +202,10 @@ export async function createApp(options: AppOptions) {
       }
 
       if (method === "POST" && parts.join("/") === "api/auth/login") {
+        if (await isLocked()) {
+          sendLocked(res);
+          return;
+        }
         const input = await readJson(req, loginSchema);
         const user = await store.findUserByEmail(input.email);
         if (!user || !verifyPassword(input.password, user.passwordHash)) {
@@ -210,6 +226,10 @@ export async function createApp(options: AppOptions) {
       }
 
       if (method === "POST" && parts.join("/") === "api/auth/password") {
+        if (await isLocked()) {
+          sendLocked(res);
+          return;
+        }
         const user = await getAuthed(req, store);
         if (!user) {
           sendJson(res, 401, { error: "Authentication required" });
@@ -229,12 +249,16 @@ export async function createApp(options: AppOptions) {
       }
 
       if (method === "GET" && parts.join("/") === "api/auth/session") {
-        const user = await getAuthed(req, store);
-        if (!user) {
-          sendJson(res, 200, { user: null });
+        if (await isLocked()) {
+          sendJson(res, 200, { user: null, locked: true });
           return;
         }
-        sendJson(res, 200, { user: publicUser(user) });
+        const user = await getAuthed(req, store);
+        if (!user) {
+          sendJson(res, 200, { user: null, locked: false });
+          return;
+        }
+        sendJson(res, 200, { user: publicUser(user), locked: false });
         return;
       }
 

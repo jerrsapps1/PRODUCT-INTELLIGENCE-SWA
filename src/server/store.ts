@@ -142,6 +142,8 @@ export interface AppStore {
   setUserPassword(userId: string, passwordHash: string): Promise<void>;
   /** Signs the user out everywhere, optionally keeping one session (the caller's own). */
   deleteUserSessions(userId: string, exceptTokenHash?: string): Promise<void>;
+  /** Signs every account out (used when sign-in is locked). */
+  deleteAllSessions(): Promise<void>;
   listProjects(userId: string): Promise<Project[]>;
   createProject(userId: string, input: ProjectCreateInput): Promise<Project>;
   getProject(userId: string, projectId: string): Promise<Project | null>;

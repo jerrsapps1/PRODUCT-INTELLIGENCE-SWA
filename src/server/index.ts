@@ -16,7 +16,8 @@ const server = await createApp({
   bootstrapPassword: config.bootstrapPassword,
   bootstrapPasswordHash: config.bootstrapPasswordHash,
   bootstrapDisplayName: config.bootstrapDisplayName,
-  secureCookies: config.nodeEnv === "production"
+  secureCookies: config.nodeEnv === "production",
+  accessLockFile: config.accessLockFile
 });
 
 server.listen(config.port, "0.0.0.0", () => {

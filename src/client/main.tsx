@@ -215,35 +215,79 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: "Request failed" }));
+    // Sign-in was locked from the computer running SWA: return to the sign-in screen.
+    if (response.status === 423) window.dispatchEvent(new CustomEvent(ACCESS_LOCKED_EVENT));
     throw new Error(body.error ?? "Request failed");
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
+const ACCESS_LOCKED_EVENT = "swa-access-locked";
+const SESSION_CHECK_MS = 30_000;
+
 function App() {
   const [user, setUser] = useState<UserSummary | null | undefined>(undefined);
+  const [locked, setLocked] = useState(false);
   const [error, setError] = useState("");
 
+  async function checkSession() {
+    try {
+      const body = await api<{ user: UserSummary | null; locked?: boolean }>("/api/auth/session");
+      setLocked(body.locked === true);
+      setUser(body.user);
+    } catch {
+      setUser((current) => (current === undefined ? null : current));
+    }
+  }
+
   useEffect(() => {
-    api<{ user: UserSummary | null }>("/api/auth/session")
-      .then((body) => setUser(body.user))
-      .catch(() => setUser(null));
+    void checkSession();
+    const onLocked = () => {
+      setLocked(true);
+      setUser(null);
+    };
+    window.addEventListener(ACCESS_LOCKED_EVENT, onLocked);
+    return () => window.removeEventListener(ACCESS_LOCKED_EVENT, onLocked);
   }, []);
 
+  // While signed in, notice a lock (or a sign-out elsewhere) within about 30 seconds.
+  useEffect(() => {
+    if (!user) return;
+    const timer = window.setInterval(() => void checkSession(), SESSION_CHECK_MS);
+    return () => window.clearInterval(timer);
+  }, [user]);
+
   if (user === undefined) return <main className="centered">Loading private workspace...</main>;
-  if (!user) return <LoginScreen onLogin={setUser} error={error} setError={setError} />;
+  if (!user) {
+    return (
+      <LoginScreen
+        onLogin={(signedIn) => {
+          setLocked(false);
+          setUser(signedIn);
+        }}
+        error={error}
+        setError={setError}
+        locked={locked}
+        onCheckAgain={checkSession}
+      />
+    );
+  }
   return <WorkspaceHome user={user} onLogout={() => setUser(null)} />;
 }
 
-function LoginScreen({
+export function LoginScreen({
   onLogin,
   error,
-  setError
+  setError,
+  locked = false,
+  onCheckAgain
 }: {
   onLogin: (user: UserSummary) => void;
   error: string;
   setError: (error: string) => void;
+  locked?: boolean;
+  onCheckAgain?: () => void | Promise<void>;
 }) {
   const [email, setEmail] = useState("owner@example.com");
   const [password, setPassword] = useState("");
@@ -271,6 +315,13 @@ function LoginScreen({
       <section className="auth-panel" aria-labelledby="login-title">
         <p className="eyebrow">Private Safety Workspace</p>
         <h1 id="login-title">Project Intelligence</h1>
+        {locked ? (
+          <div className="locked-notice" role="status">
+            <strong>Sign-in is locked</strong>
+            <p>Access was locked on the computer running SWA. Use the <strong>Unlock SWA</strong> shortcut there to allow sign-in again.</p>
+            {onCheckAgain ? <button type="button" className="ghost" onClick={() => void onCheckAgain()}>Check again</button> : null}
+          </div>
+        ) : null}
         <form onSubmit={submit} className="stack">
           <label htmlFor="login-email">
             Email
@@ -281,7 +332,7 @@ function LoginScreen({
             <input id="login-password" value={password} onChange={(event) => setPassword(event.target.value)} type="password" required />
           </label>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
-          <button className="primary" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
+          <button className="primary" disabled={busy || locked}>{busy ? "Signing in..." : "Sign in"}</button>
         </form>
         <details className="auth-help">
           <summary>Forgot your password?</summary>

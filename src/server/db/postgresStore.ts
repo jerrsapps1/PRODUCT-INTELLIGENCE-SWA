@@ -1697,6 +1697,10 @@ export class PostgresStore implements AppStore {
     await this.pool.query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1", [userId, passwordHash]);
   }
 
+  async deleteAllSessions(): Promise<void> {
+    await this.pool.query("DELETE FROM sessions");
+  }
+
   async deleteUserSessions(userId: string, exceptTokenHash?: string): Promise<void> {
     await this.pool.query("DELETE FROM sessions WHERE user_id = $1 AND token_hash IS DISTINCT FROM $2", [userId, exceptTokenHash ?? null]);
   }

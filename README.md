@@ -27,6 +27,7 @@ On Windows, run `tools\install-swa-shortcuts.ps1` once to create desktop shortcu
 - `Stop SWA Local` stops repo-owned SWA app processes on the local development ports.
 - `SWA Accounts` lists and creates accounts, resets a password, or hashes the `.env` password (see below).
 - `Reset SWA Password` goes straight to resetting a forgotten password.
+- `Lock SWA` / `Unlock SWA` turn sign-in off and on (see below).
 
 The launcher uses the existing `npm.cmd run dev` script, waits for the API health endpoint and Vite frontend, then opens `http://127.0.0.1:5173/` in the default browser.
 
@@ -54,6 +55,14 @@ Passwords are only ever stored as scrypt hashes in the database. Accounts are ma
 - **Each account has its own workspace**: projects, contractors, sources and records belong to the account that created them. A new account starts empty.
 - Signed in, use **Change password** in the top bar (current password required; other browsers are signed out).
 - Passwords must be at least 10 characters.
+
+### Locking sign-in
+
+`Lock SWA` (`tools\lock-swa.ps1`, `npm.cmd run access:lock`) signs everyone out and refuses every sign-in, while the app keeps running and no data changes. Open browser tabs return to the sign-in screen within about 30 seconds, and the sign-in screen says sign-in is locked. `Unlock SWA` (`tools\unlock-swa.ps1`, `npm.cmd run access:unlock`) allows sign-in again; everyone signs in afresh. `npm.cmd run access:status` shows the current state, and the SWA Local window mentions it at startup.
+
+- Works whether or not SWA Local is running; a lock applied while the server is stopped still ends existing sessions when it next starts.
+- The state lives in `.data\access-lock.json` (ignored by Git; override with `ACCESS_LOCK_FILE`). If that file can't be read, sign-in stays locked rather than open.
+- Locking is controlled only from this computer; there is no way to lock or unlock from the web.
 
 #### The password in `.env`
 

@@ -238,6 +238,10 @@ try {
       Start-Process $frontendUrl
     }
     Write-Log "SWA Local Server is running. Close this window or run tools\stop-swa-local.ps1 to stop app services. Logs: $logRoot"
+    $lockPath = Join-Path $repoRoot ".data\access-lock.json"
+    if ((Test-Path $lockPath) -and ((Get-Content $lockPath -Raw | ConvertFrom-Json).locked -eq $true)) {
+      Write-Log "Sign-in is LOCKED. Run the Unlock SWA shortcut (tools\unlock-swa.ps1) to allow sign-in."
+    }
     Wait-Process -Id $npm.Id
   } finally {
     if (!$npm.HasExited) {

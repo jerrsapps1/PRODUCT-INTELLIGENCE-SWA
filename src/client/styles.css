@@ -1039,3 +1039,21 @@ a {
 .auth-help code {
   font-size: 0.75rem;
 }
+
+.locked-notice {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: start;
+  margin-bottom: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 8px;
+  background: rgba(251, 191, 36, 0.08);
+  font-size: 0.85rem;
+}
+
+.locked-notice p {
+  margin: 0;
+  line-height: 1.45;
+  color: #cbd5e1;
+}

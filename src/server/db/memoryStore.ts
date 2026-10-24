@@ -321,6 +321,10 @@ export class MemoryStore implements AppStore {
     if (user) this.users.set(userId, { ...user, passwordHash });
   }
 
+  async deleteAllSessions(): Promise<void> {
+    this.sessions.clear();
+  }
+
   async deleteUserSessions(userId: string, exceptTokenHash?: string): Promise<void> {
     for (const [tokenHash, session] of this.sessions) {
       if (session.userId === userId && tokenHash !== exceptTokenHash) this.sessions.delete(tokenHash);
